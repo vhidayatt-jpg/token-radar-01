@@ -1,0 +1,97 @@
+{
+  "as_of": "2026-11-19T17:00:51+07:00",
+  "source": "farm_plan.py action_costs_usd()",
+  "method": "execution-only; L2 excl. L1 data fee; Solana excl. rent (reported separately)",
+  "chains": {
+    "arbitrum": {
+      "execution_usd": {
+        "approve": 0.0018,
+        "swap": 0.0054,
+        "deposit": 0.0047,
+        "bridge": 0.0072
+      },
+      "first_account_rent_usd": null,
+      "entry_usd": 0.0047
+    },
+    "avax": {
+      "execution_usd": {
+        "approve": 0.0027,
+        "swap": 0.008,
+        "deposit": 0.0069,
+        "bridge": 0.0106
+      },
+      "first_account_rent_usd": null,
+      "entry_usd": 0.0069
+    },
+    "base": {
+      "execution_usd": {
+        "approve": 0.0005,
+        "swap": 0.0016,
+        "deposit": 0.0014,
+        "bridge": 0.0022
+      },
+      "first_account_rent_usd": null,
+      "entry_usd": 0.0014
+    },
+    "bsc": {
+      "execution_usd": {
+        "approve": 0.0015,
+        "swap": 0.0044,
+        "deposit": 0.0038,
+        "bridge": 0.0059
+      },
+      "first_account_rent_usd": null,
+      "entry_usd": 0.0038
+    },
+    "ethereum": {
+      "execution_usd": {
+        "approve": 0.0085,
+        "swap": 0.0256,
+        "deposit": 0.0222,
+        "bridge": 0.0341
+      },
+      "first_account_rent_usd": null,
+      "entry_usd": 0.0222
+    },
+    "linea": {
+      "execution_usd": {
+        "approve": 0.0045,
+        "swap": 0.0135,
+        "deposit": 0.0117,
+        "bridge": 0.0181
+      },
+      "first_account_rent_usd": null,
+      "entry_usd": 0.0117
+    },
+    "optimism": {
+      "execution_usd": {
+        "approve": 0.0001,
+        "swap": 0.0003,
+        "deposit": 0.0002,
+        "bridge": 0.0004
+      },
+      "first_account_rent_usd": null,
+      "entry_usd": 0.0002
+    },
+    "scroll": {
+      "execution_usd": {
+        "approve": 0.0,
+        "swap": 0.0,
+        "deposit": 0.0,
+        "bridge": 0.0
+      },
+      "first_account_rent_usd": null,
+      "entry_usd": 0.0
+    },
+    "solana": {
+      "execution_usd": {
+        "approve": 0.0004,
+        "swap": 0.0004,
+        "deposit": 0.0004,
+        "bridge": 0.0004
+      },
+      "first_account_rent_usd": 0.1519,
+      "entry_usd": 0.1523
+    }
+  }
+}
