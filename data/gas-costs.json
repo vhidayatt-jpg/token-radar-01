@@ -1,22 +1,22 @@
 {
-  "as_of": "2026-11-19T17:00:51+07:00",
+  "as_of": "2026-11-20T00:32:34+07:00",
   "source": "farm_plan.py action_costs_usd()",
   "method": "execution-only; L2 excl. L1 data fee; Solana excl. rent (reported separately)",
   "chains": {
     "arbitrum": {
       "execution_usd": {
         "approve": 0.0018,
-        "swap": 0.0054,
-        "deposit": 0.0047,
-        "bridge": 0.0072
+        "swap": 0.0053,
+        "deposit": 0.0046,
+        "bridge": 0.0071
       },
       "first_account_rent_usd": null,
-      "entry_usd": 0.0047
+      "entry_usd": 0.0046
     },
     "avax": {
       "execution_usd": {
-        "approve": 0.0027,
-        "swap": 0.008,
+        "approve": 0.0026,
+        "swap": 0.0079,
         "deposit": 0.0069,
         "bridge": 0.0106
       },
@@ -28,7 +28,7 @@
         "approve": 0.0005,
         "swap": 0.0016,
         "deposit": 0.0014,
-        "bridge": 0.0022
+        "bridge": 0.0021
       },
       "first_account_rent_usd": null,
       "entry_usd": 0.0014
@@ -45,20 +45,20 @@
     },
     "ethereum": {
       "execution_usd": {
-        "approve": 0.0085,
-        "swap": 0.0256,
-        "deposit": 0.0222,
-        "bridge": 0.0341
+        "approve": 0.0612,
+        "swap": 0.1837,
+        "deposit": 0.1592,
+        "bridge": 0.245
       },
       "first_account_rent_usd": null,
-      "entry_usd": 0.0222
+      "entry_usd": 0.1592
     },
     "linea": {
       "execution_usd": {
         "approve": 0.0045,
         "swap": 0.0135,
         "deposit": 0.0117,
-        "bridge": 0.0181
+        "bridge": 0.018
       },
       "first_account_rent_usd": null,
       "entry_usd": 0.0117
@@ -90,8 +90,8 @@
         "deposit": 0.0004,
         "bridge": 0.0004
       },
-      "first_account_rent_usd": 0.1519,
-      "entry_usd": 0.1523
+      "first_account_rent_usd": 0.1509,
+      "entry_usd": 0.1513
     }
   }
 }

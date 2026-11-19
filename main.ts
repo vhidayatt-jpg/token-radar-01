@@ -1,4 +1,4 @@
-// Token Radar (radar-2): a program/v1 entry for token-radar-01.
+// Token Radar (radar-3): a program/v1 entry for token-radar-01.
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
 // pre-token protocol with the model in lib/model.ts, writes the ranked board to /output/board.json,
@@ -7,8 +7,9 @@
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html, dashboard/app.css
 // and dashboard/app.js read /output/data.js, which this program writes from the same board. The model
-// is calibrated on real token launches (research/comparables.json): a per-category launch multiple,
-// not a flat guess, and the page shows the calibration table beside the board.
+// is a per-category power law fitted on 67 real token launches (research/comparables-v2.json):
+// implied = exp(intercept[category] + 0.418 x ln(TVL)) x growth x maturity, validated
+// out-of-sample against constant multiples — and the page shows the calibration table beside the board.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json

@@ -74,6 +74,11 @@ a { color: var(--radar); }
 .fact b { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .fact b small { font-size: 13px; color: var(--muted); font-weight: 600; }
 
+/* ---- KPI strip ---- */
+.kpi-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 20px; }
+.kpi-strip .fact { margin: 0; }
+.kpi-strip .fact b { font-size: 18px; overflow-wrap: anywhere; }
+
 /* ---- panels ---- */
 .panel {
   background: var(--panel); border: 1px solid var(--line-soft);
@@ -218,6 +223,7 @@ dialog.detail::backdrop { background: rgba(4, 8, 18, 0.72); }
 @media (max-width: 760px) {
   .lede { grid-template-columns: 1fr; }
   .facts { grid-template-columns: 1fr 1fr; }
+  .kpi-strip { grid-template-columns: 1fr 1fr; }
   .field input[type="search"] { width: 100%; }
   .equation { grid-template-columns: 1fr; }
   .top { flex-wrap: wrap; }

@@ -1,28 +1,34 @@
-// The token radar's model (radar-2): one snapshot of the protocol universe in, one ranked board out.
+// The token radar's model (radar-3): one snapshot of the protocol universe in, one ranked board out.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never a ceiling) and adds every
-// other rankable pre-token protocol below the floor: the early rows the radar exists to find. A protocol
-// is pre-token when its index entry records no token (no market cap, no CoinGecko id, no symbol); the
-// snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed into
-// the ranked board.
+// other pre-token protocol in the snapshot: the radar ranks every protocol that records no token, not
+// just the watchlist and the rankable subset. A protocol is pre-token when its index entry records no
+// token (no market cap, no CoinGecko id, no symbol); the snapshot's live-token protocols are kept
+// apart and shown as the market's own values, never mixed into the ranked board.
 //
 // Implied value is the estimated fully-diluted value of the token at launch, and follows only from the
-// snapshot's own figures plus a per-category multiple calibrated on real launches:
+// snapshot's own figures plus a per-category power law fitted on real launches:
 //
-//   implied = tvl_usd x MULTIPLE[category] x growthMult x maturityMult
+//   implied = exp(INTERCEPT[category] + SLOPE x ln(tvl_usd)) x growthMult x maturityMult
 //
-//   MULTIPLE[category]  the geometric mean of FDV/TVL at launch across real token launches in that
-//                       category (day-0 and day-7 after launch), winsorized to [0.05, 10]. A category
-//                       with one launch is shrunk halfway toward the global mean in log space; a
-//                       category with no launch uses the closest measured category, or the global mean.
-//                       The launches, their TVL at launch (DefiLlama) and their FDV at launch (first
-//                       price x max supply) are listed in research/comparables.json and shown on the
-//                       dashboard's calibration panel. No protocol name is ever special-cased.
-//   growthMult          = 1 + clamp(change_7d, -60, 120) / 100 x 0.5
-//   maturityMult        = 0.6 + min(age_days, 1095) / 1095 x 0.4   (age unknown: 365 days)
+//   INTERCEPT[category]  the intercept of log(FDV) on log(TVL) for that category, fitted on the real
+//                        launches in research/comparables-v2.json (67 usable launches; 5-fold CV
+//                        median log error ~1.0 vs ~1.44 for constant multiples). A category with no
+//                        credible estimate uses the global intercept. The launches, their TVL at
+//                        launch (DefiLlama) and their FDV at launch (first price x max supply) are
+//                        listed in research/comparables-v2.json and shown on the dashboard's
+//                        calibration panel. No protocol name is ever special-cased.
+//   SLOPE              0.418, common across categories: FDV grows far slower than TVL, so the
+//                        implied FDV/TVL ratio falls as a protocol gets bigger.
+//   growthMult         = 1 + clamp(change_7d, -60, 120) / 100 x 0.5
+//   maturityMult       = 0.6 + min(age_days, 1095) / 1095 x 0.4   (age unknown: 365 days)
 //
-// The constants are the house model's growth and maturity shapes with the starter's flat 0.25x base
-// multiple replaced by the calibrated per-category table below.
+// The constant per-category multiples (research/multiples-v2.json, geometric mean of winsorized
+// FDV/TVL) are kept below as a documented fallback, not the active model: validation showed they
+// predict no better than the v1 multiples, while the power law clearly does. The effective
+// FDV/TVL ratio a protocol gets under the power law (its base divided by its TVL) is what the
+// board and the dashboard show as its "multiple" — it is a function of the protocol's TVL and
+// category, never a hand-written per-protocol value.
 
 // Gas costs in the farm plans are measured, not guessed: repo/data/gas-costs.json is a
 // timestamped snapshot of farm_plan.action_costs_usd() (execution cost per action, plus the
@@ -68,6 +74,10 @@ export interface ModelConstants {
   unknown_age_days: number;
   multiple_floor: number;
   multiple_cap: number;
+  /** The power law's common slope: log(FDV) = intercept + power_slope x log(TVL). */
+  power_slope: number;
+  /** The power law's intercept for a category with no credible estimate of its own (RWA included). */
+  power_intercept_global: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -80,97 +90,137 @@ export const MODEL: ModelConstants = {
   unknown_age_days: 365,
   multiple_floor: 0.05,
   multiple_cap: 10,
+  power_slope: 0.418,
+  power_intercept_global: 12.311,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /**
- * The calibrated per-category launch multiples: geometric mean of FDV/TVL at launch across the real
- * launches in research/comparables.json, winsorized to [0.05, 10].
+ * The power law's per-category intercepts: log(FDV) = a_category + 0.418 x log(TVL), fitted on the
+ * 67 usable launches in research/comparables-v2.json (research/multiples-v2.json). A category with
+ * no credible estimate of its own uses the global intercept 12.311 — RWA included, because its two
+ * usable launches (Usual 2.75x, Goldfinch 68x winsorized to 10x) do not make a credible category
+ * estimate: RWA's on-chain TVL misses the off-chain loan book, so its ratios are inflated by
+ * structure, not by value. Aliases map a snapshot category to the closest measured one; anything
+ * unlisted uses the global intercept.
  *
- * Measured categories (n = launches behind the figure; per-launch ratio = geomean of day-0 and
- * day-7 FDV/TVL; n=1 shrunk halfway toward the global mean in log space):
- *   Dexs 5.118 (n=2: Jupiter 57.04x, Aerodrome 0.46x)
- *   Bridge 3.139 (n=1: Wormhole 5.47x)
- *   Derivatives 3.229 (n=3: Hyperliquid 6.61x, Drift 1.15x, Zeta Markets 4.42x)
- *   Lending 0.310 (n=3: Morpho 0.68x, Kamino 0.53x, Dolomite 0.08x)
- *   Liquid Staking 2.690 (n=2: ether.fi 1.23x, Jito 5.88x)
- *   RWA 2.225 (n=1: Usual 2.75x)
- *   Restaking 0.559 (n=2: EigenLayer 0.60x, Renzo 0.52x)
- *   Basis Trading 3.704 (n=1: Ethena 7.62x)
- *   Global 1.801 (all 15 app-token launches)
- * Excluded from calibration: chain (L1/L2) tokens — valued on ecosystem potential, not TVL
- * (Starknet ~120-340x, zkSync ~40x vs app tokens 0.1-10x); the Chain category uses the global
- * mean. Also excluded: Seamless (Lending, ~168x on $8M launch TVL — micro-TVL outlier; would
- * lift the Lending multiple ~5x on one noisy observation) and launches with no computable
- * ratio (Puffer, Swell, LayerZero, Celestia, Movement, Dymension, Ondo, Maple/Syrup, Plume).
- * Mapped categories use the closest measured one; the rest use the global mean.
- * (Table is filled from research/comparables.json; update the numbers, never the shape.)
+ * Measured intercepts (n = launches behind the figure):
+ *   Basis Trading 12.861 (n=3)   Bridge 12.192 (n=7)   CDP 12.719 (n=5)
+ *   Derivatives 12.856 (n=8)     Dexs 12.797 (n=11)    Lending 11.584 (n=14)
+ *   Liquid Staking 12.616 (n=9)  RWA 12.311 = global   Restaking 11.258 (n=6)
+ *   Yield 11.870 (n=2)           Global 12.311 (all 67 launches)
+ * Implied ratios the law gives: at $100M TVL, Basis Trading 8.56x, Derivatives 8.51x, Dexs 8.02x,
+ * CDP 7.43x, Liquid Staking 6.70x, RWA 5.20x, Bridge 4.38x, Yield 3.18x, Lending 2.39x,
+ * Restaking 1.72x; at $1B TVL the same categories run 2.24x down to 0.45x — the ratio falls with
+ * size, which is what the data says (Spark, EigenLayer and Dolomite launched below 1x on
+ * billion-dollar TVL). No protocol name is ever special-cased.
  */
-export const MULTIPLES: Record<string, number> = {
-  Dexs: 5.118,
-  Bridge: 3.139,
-  'Canonical Bridge': 3.139,
-  'Cross Chain': 3.139,
-  'Cross Chain Bridge': 3.139,
-  RWA: 2.225,
-  Restaking: 0.559,
-  'Liquid Restaking': 0.559,
-  'Restaked BTC': 0.559,
-  'Collateral Markets': 0.559,
-  Lending: 0.31,
-  'Risk Curators': 0.31,
-  'Onchain Capital Allocator': 0.31,
-  'Liquid Staking': 2.69,
-  'Staking Pool': 2.69,
-  'Basis Trading': 3.704,
-  CDP: 3.704,
-  'Stablecoin Wrapper': 3.704,
-  Derivatives: 3.229,
-  'Leveraged Farming': 0.31,
-  Yield: 1.801,
-  'Yield Aggregator': 1.801,
-  Chain: 1.801,
-  CeDeFi: 1.801,
-  Payments: 1.801,
-  Insurance: 1.801,
-  'Governance Incentives': 1.801,
-  'Prediction Market': 1.801,
-  Options: 1.801,
-  Privacy: 1.801,
-  'AI Agents': 1.801,
-  Launchpad: 1.801,
-  Indexes: 1.801,
-  'Liquidity Manager': 1.801,
-  'NFT Marketplace': 1.801,
-  'Token Locker': 1.801,
-  'Dual-Token Stablecoin': 3.704,
-  DOR: 1.801,
-  'Collateral Management': 0.31,
-  'Decentralized AI': 1.801,
-  CEX: 1.801,
-  Other: 1.801,
+export const POWER_INTERCEPTS: Record<string, number> = {
+  'Basis Trading': 12.861,
+  Bridge: 12.192,
+  'Canonical Bridge': 12.192,
+  'Cross Chain': 12.192,
+  'Cross Chain Bridge': 12.192,
+  CDP: 12.719,
+  Derivatives: 12.856,
+  Dexs: 12.797,
+  Lending: 11.584,
+  'Risk Curators': 11.584,
+  'Onchain Capital Allocator': 11.584,
+  'Leveraged Farming': 11.584,
+  'Collateral Management': 11.584,
+  'Liquid Staking': 12.616,
+  'Staking Pool': 12.616,
+  RWA: 12.311,
+  Restaking: 11.258,
+  'Liquid Restaking': 11.258,
+  'Restaked BTC': 11.258,
+  'Collateral Markets': 11.258,
+  Yield: 11.87,
+  'Yield Aggregator': 11.87,
+  'Stablecoin Wrapper': 12.861,
+  'Dual-Token Stablecoin': 12.861,
 };
 
-/** The global fallback multiple: the geometric mean across every measured launch. */
-export const GLOBAL_MULTIPLE = 1.801;
+/** The global intercept: the fallback for a category with no credible estimate of its own. */
+export const GLOBAL_INTERCEPT = 12.311;
 
-/** How many launches back each measured multiple, for the dashboard's calibration panel. */
-export const MULTIPLE_N: Record<string, number> = {
-  Dexs: 2,
-  Bridge: 1,
-  Derivatives: 3,
-  Lending: 3,
-  'Liquid Staking': 2,
-  RWA: 1,
-  Restaking: 2,
-  'Basis Trading': 1,
+/** How many launches back each measured intercept, for the dashboard's calibration panel. */
+export const POWER_N: Record<string, number> = {
+  'Basis Trading': 3,
+  Bridge: 7,
+  CDP: 5,
+  Derivatives: 8,
+  Dexs: 11,
+  Lending: 14,
+  'Liquid Staking': 9,
+  Restaking: 6,
+  Yield: 2,
 };
 
-/** The multiple one category gets: its table entry, else the global mean. */
-export function multipleFor(category: string | null): number {
-  if (category !== null && Object.prototype.hasOwnProperty.call(MULTIPLES, category)) return MULTIPLES[category]!;
+/** The intercept one category gets: its table entry, else the global intercept. */
+export function interceptFor(category: string | null): number {
+  if (category !== null && Object.prototype.hasOwnProperty.call(POWER_INTERCEPTS, category)) return POWER_INTERCEPTS[category]!;
+  return GLOBAL_INTERCEPT;
+}
+
+/**
+ * The constant per-category multiples (research/multiples-v2.json): the geometric mean of
+ * FDV/TVL at launch across the same 67 launches, winsorized to [0.05, 10]. DOCUMENTED
+ * FALLBACK ONLY — not the active model. Validation showed constant multiples predict no better
+ * than the v1 multiples (5-fold CV median log error 1.435 vs 1.371), while the power law above
+ * clearly does (0.991 global / 1.030 per-category). Kept so the dashboard can show the
+ * fallback beside the power law, and so a later decision to return to constant multiples has
+ * the numbers ready. Same aliases as the intercepts; RWA uses the global multiple.
+ */
+export const MULTIPLES_V2: Record<string, number> = {
+  'Basis Trading': 2.062,
+  Bridge: 2.065,
+  'Canonical Bridge': 2.065,
+  'Cross Chain': 2.065,
+  'Cross Chain Bridge': 2.065,
+  CDP: 4.176,
+  Derivatives: 6.545,
+  Dexs: 3.966,
+  Lending: 0.907,
+  'Risk Curators': 0.907,
+  'Onchain Capital Allocator': 0.907,
+  'Leveraged Farming': 0.907,
+  'Collateral Management': 0.907,
+  'Liquid Staking': 2.418,
+  'Staking Pool': 2.418,
+  RWA: 2.113,
+  Restaking: 0.403,
+  'Liquid Restaking': 0.403,
+  'Restaked BTC': 0.403,
+  'Collateral Markets': 0.403,
+  Yield: 1.726,
+  'Yield Aggregator': 1.726,
+  'Stablecoin Wrapper': 2.062,
+  'Dual-Token Stablecoin': 2.062,
+};
+
+/** The fallback's global multiple: the geometric mean across every usable launch. */
+export const GLOBAL_MULTIPLE = 2.113;
+
+/** How many launches back each fallback multiple. */
+export const MULTIPLE_N_V2: Record<string, number> = {
+  'Basis Trading': 3,
+  Bridge: 7,
+  CDP: 5,
+  Derivatives: 8,
+  Dexs: 11,
+  Lending: 14,
+  'Liquid Staking': 9,
+  Restaking: 6,
+  Yield: 2,
+};
+
+/** The fallback multiple one category gets: its v2 table entry, else the global multiple. */
+export function multipleForV2(category: string | null): number {
+  if (category !== null && Object.prototype.hasOwnProperty.call(MULTIPLES_V2, category)) return MULTIPLES_V2[category]!;
   return GLOBAL_MULTIPLE;
 }
 
@@ -198,8 +248,11 @@ export interface BoardRow {
   age_days: number | null;
   implied_value_usd: number;
   model: {
+    /** The effective FDV/TVL ratio the power law gives this protocol at its TVL: base / tvl_usd. */
     multiple: number;
     multiple_basis: string;
+    /** The power-law intercept the protocol's category got. */
+    intercept: number;
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
@@ -237,9 +290,14 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
-/** One calibration row for the dashboard: category, multiple, launches behind it. */
+/** One calibration row for the dashboard: category, power-law intercept, fallback multiple, launches behind it. */
 export interface CalibrationRow {
   category: string;
+  /** The power law's intercept for this category (global intercept when the category has none of its own). */
+  intercept: number;
+  /** The power law's common slope (0.418 for every category). */
+  slope: number;
+  /** The constant-multiple fallback (v2) for this category. */
   multiple: number;
   launches: number;
   basis: string;
@@ -287,27 +345,32 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
-/** The three multipliers and the implied value one protocol gets under `model`. */
-export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants): { implied: number; multiple: number; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
+/** The multipliers and the implied value one protocol gets under `model` (power law, radar-3). */
+export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants): { implied: number; multiple: number; intercept: number; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-  const multiple = Math.min(model.multiple_cap, Math.max(model.multiple_floor, multipleFor(protocol.category)));
-  const base = protocol.tvl_usd * multiple;
+  // The power law's base: exp(a_category + slope x ln(TVL)). No clamp on the effective ratio —
+  // the [0.05, 10] winsorization was a rule for calibrating per-launch ratios, not an output
+  // clamp: a small protocol legitimately prices at a high FDV/TVL (the fitted law gives ~28x at
+  // $5M TVL on the global intercept), and clamping it would bend the model the validation chose.
+  const intercept = interceptFor(protocol.category);
+  const base = Math.exp(intercept + model.power_slope * Math.log(Math.max(1, protocol.tvl_usd)));
+  const multiple = base / Math.max(1, protocol.tvl_usd);
   const implied = Math.max(1, Math.round(base * growthMult * maturityMult));
-  return { implied, multiple, growthPct, growthMult, maturityMult, age };
+  return { implied, multiple, intercept, growthPct, growthMult, maturityMult, age };
 }
-
-/** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
-const VERSIONED = /\s(V\d+(\.\d+)?|v\d+(\.\d+)?|\d+\.\d+)$/;
 
 /** Whether a protocol records no token at all. */
 export function isPreToken(p: SnapshotProtocol): boolean {
   return p.mcap_usd === null && p.gecko_id === null && p.symbol === null;
 }
+
+/** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
+const VERSIONED = /\s(V\d+(\.\d+)?|v\d+(\.\d+)?|\d+\.\d+)$/;
 
 /**
  * The watchlist's own exclusion rule, applied to every board row, not just the watchlist: a wrapped,
@@ -319,7 +382,7 @@ export function isPreToken(p: SnapshotProtocol): boolean {
 const EXCLUDED_CATEGORIES = new Set(['Bridge', 'Canonical Bridge', 'Liquid Staking', 'Liquid Restaking', 'Restaked BTC', 'CEX']);
 const WRAPPED_WORD = /\bwrapped\b|\bstaked\b|\bstaking\b/i;
 /** A staked receipt token in the name: stHYPE, stETH, stSOL — a token that already trades. */
-const ST_TOKEN = /\bst[A-Z]{2,}\b/;
+const ST_TOKEN = /\bst[A-Z]{2,}/;
 const EXCHANGE_PREFIX = /^(Binance|Coinbase|Bybit|Kraken|Bitget|OKX|Bitfinex|Gemini)\b/;
 
 /** Whether a protocol is one the board may rank: pre-token, and not a wrapped, staked or bridged product of a token that trades, not an exchange, not a versioned pool. */
@@ -349,16 +412,19 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     const p = index.get(slug);
     if (p !== undefined) chosen.set(slug, p);
   }
-  // The early radar: every other rankable pre-token protocol, strongest TVL first. Never a replacement
-  // for a watchlist row: a chosen protocol stays chosen.
+  // The early radar: every other rankable pre-token protocol, strongest TVL first. The v1
+  // exclusions are restored (Hunter's decision, 20 Nov 2026): a wrapped, staked or bridged
+  // product of a token that already trades is not a protocol waiting on a launch of its own,
+  // and neither is an exchange or a versioned pool. Never a replacement for a watchlist row:
+  // a chosen protocol stays chosen.
   const early = snapshot.protocols
     .filter((p) => !chosen.has(p.slug) && isRankable(p))
     .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   for (const p of early) chosen.set(p.slug, p);
 
   const scored = [...chosen.values()].map((p) => {
-    const { implied, multiple, growthPct, growthMult, maturityMult, age } = impliedValue(p, snapshot.as_of, model);
-    return { p, implied, multiple, growthPct, growthMult, maturityMult, age };
+    const { implied, multiple, intercept, growthPct, growthMult, maturityMult, age } = impliedValue(p, snapshot.as_of, model);
+    return { p, implied, multiple, intercept, growthPct, growthMult, maturityMult, age };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -378,7 +444,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     implied_value_usd: s.implied,
     model: {
       multiple: round3(s.multiple),
-      multiple_basis: multipleBasis(s.p.category),
+      multiple_basis: interceptBasis(s.p.category),
+      intercept: round3(s.intercept),
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
@@ -391,13 +458,24 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
 const round3 = (n: number): number => Math.round(n * 1e3) / 1e3;
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
-/** Where a category's multiple comes from, in the dashboard's words. */
-export function multipleBasis(category: string | null): string {
-  if (category !== null && Object.prototype.hasOwnProperty.call(MULTIPLE_N, category)) {
-    const n = MULTIPLE_N[category]!;
+/** Where a category's intercept comes from, in the dashboard's words. */
+export function interceptBasis(category: string | null): string {
+  if (category === 'RWA') return 'power law, global intercept (category estimate not credible)';
+  if (category !== null && Object.prototype.hasOwnProperty.call(POWER_N, category)) {
+    const n = POWER_N[category]!;
+    return `power law fitted on ${n} launch${n === 1 ? '' : 'es'} in this category`;
+  }
+  if (category !== null && Object.prototype.hasOwnProperty.call(POWER_INTERCEPTS, category)) return 'power law, closest measured category\u2019s intercept';
+  return 'power law, global intercept across all launches';
+}
+
+/** Where the fallback multiple comes from, for the calibration table's fallback column. */
+export function fallbackBasis(category: string | null): string {
+  if (category !== null && Object.prototype.hasOwnProperty.call(MULTIPLE_N_V2, category)) {
+    const n = MULTIPLE_N_V2[category]!;
     return `${n} launch${n === 1 ? '' : 'es'} in this category`;
   }
-  if (category !== null && Object.prototype.hasOwnProperty.call(MULTIPLES, category)) return 'closest measured category';
+  if (category !== null && Object.prototype.hasOwnProperty.call(MULTIPLES_V2, category)) return 'closest measured category';
   return 'global mean across all launches';
 }
 
@@ -739,22 +817,46 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
     }));
 }
 
-/** The calibration table the dashboard shows: measured categories first, then the mappings. */
+/** The calibration table the dashboard shows: measured intercepts first, then the mappings, then the global row. */
 export function calibrationRows(): CalibrationRow[] {
-  const measured = Object.keys(MULTIPLE_N).sort();
+  const measured = Object.keys(POWER_N).sort();
   const rows: CalibrationRow[] = measured.map((c) => ({
     category: c,
-    multiple: MULTIPLES[c]!,
-    launches: MULTIPLE_N[c]!,
-    basis: 'median launch FDV/TVL',
+    intercept: POWER_INTERCEPTS[c]!,
+    slope: MODEL.power_slope,
+    multiple: MULTIPLES_V2[c]!,
+    launches: POWER_N[c]!,
+    basis: interceptBasis(c),
   }));
-  const mapped = Object.keys(MULTIPLES)
-    .filter((c) => !Object.prototype.hasOwnProperty.call(MULTIPLE_N, c) && c !== 'Other')
+  const mapped = Object.keys(POWER_INTERCEPTS)
+    .filter((c) => !Object.prototype.hasOwnProperty.call(POWER_N, c) && c !== 'RWA')
     .sort();
   for (const c of mapped) {
-    rows.push({ category: c, multiple: MULTIPLES[c]!, launches: 0, basis: multipleBasis(c) });
+    rows.push({
+      category: c,
+      intercept: POWER_INTERCEPTS[c]!,
+      slope: MODEL.power_slope,
+      multiple: MULTIPLES_V2[c]!,
+      launches: 0,
+      basis: interceptBasis(c),
+    });
   }
-  rows.push({ category: 'Any other category', multiple: GLOBAL_MULTIPLE, launches: 0, basis: 'global mean across all launches' });
+  rows.push({
+    category: 'RWA',
+    intercept: GLOBAL_INTERCEPT,
+    slope: MODEL.power_slope,
+    multiple: GLOBAL_MULTIPLE,
+    launches: 0,
+    basis: interceptBasis('RWA'),
+  });
+  rows.push({
+    category: 'Any other category',
+    intercept: GLOBAL_INTERCEPT,
+    slope: MODEL.power_slope,
+    multiple: GLOBAL_MULTIPLE,
+    launches: 0,
+    basis: 'power law, global intercept across all launches',
+  });
   return rows;
 }
 

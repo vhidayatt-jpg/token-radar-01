@@ -1,4 +1,4 @@
-// Token Radar's dashboard (radar-2). It reads window.RADAR (written beside dashboard/ by main.ts) and
+// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by main.ts) and
 // renders the ranked board, a filterable table, a per-protocol detail drawer with the model's own
 // inputs and the protocol's farm plan, and the calibration table the multiples come from.
 // No network: every byte it shows is in data.js.
@@ -32,14 +32,16 @@
   }
   // The model in one function: the page recomputes a row from the snapshot figures and checks the
   // number board.json carries, so the page's code and the board's data are visibly the same arithmetic.
-  // implied = tvl x multiple(category) x growthMult x maturityMult.
+  // implied = tvl x effectiveRatio x growthMult x maturityMult, where effectiveRatio is the power
+  // law's base divided by the protocol's TVL (exp(a_category + 0.418 x ln(TVL)) / TVL). No clamp on
+  // the ratio: a small protocol legitimately prices at a high FDV/TVL, and the row already carries
+  // the exact ratio the board used, so the recomputation must use it as-is.
   function impliedOf(row, model) {
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * model.growth_weight;
     var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
     var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-    var multiple = Math.min(model.multiple_cap, Math.max(model.multiple_floor, row.multiple));
-    return Math.max(1, Math.round(row.tvl_usd * multiple * growthMult * maturity));
+    return Math.max(1, Math.round(row.tvl_usd * row.multiple * growthMult * maturity));
   }
 
   function el(tag, attrs) {
@@ -309,7 +311,7 @@
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', null, DATA.watchlist_size + ' watchlist protocols, ', el('em', { text: 'ranked by implied value' })),
-        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' pre-token protocols below that floor. Implied value is the estimated fully-diluted value of the token at launch, from the snapshot figures and a per-category launch multiple. It is a model, not a promise.' })
+        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The board ranks every pre-token protocol in the snapshot — ' + DATA.board_size + ' in total. Implied value is the estimated fully-diluted value of the token at launch, from a per-category power law fitted on 67 real launches. It is a model, not a promise.' })
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
@@ -320,31 +322,47 @@
     );
   }
 
+  // The KPI strip: the board's headline numbers, computed from the rows the page already carries.
+  // Total implied value is the sum of every ranked row's implied value; the top protocol is rank 1.
+  function kpiStrip() {
+    var total = 0;
+    DATA.rows.forEach(function (r) { total += r.implied_value_usd || 0; });
+    var top = DATA.rows.length > 0 ? DATA.rows[0] : null;
+    return el('section', { class: 'kpi-strip', 'aria-label': 'Board totals' },
+      el('div', { class: 'fact' }, el('span', { text: 'Protocols ranked' }), el('b', { text: String(DATA.board_size) })),
+      el('div', { class: 'fact' }, el('span', { text: 'Total implied value' }), el('b', { text: fmtUsd(total) })),
+      el('div', { class: 'fact' }, el('span', { text: 'Watchlist protocols' }), el('b', { text: String(DATA.watchlist_size) })),
+      el('div', { class: 'fact' }, el('span', { text: 'Top protocol' }), el('b', null, top ? top.name : 'n/a', top ? el('small', { text: ' ' + fmtUsd(top.implied_value_usd) + ' implied' }) : null))
+    );
+  }
+
   function calibrationPanel() {
     var tbody = el('tbody');
     DATA.calibration.forEach(function (c) {
       tbody.appendChild(el('tr', null,
         el('td', { text: c.category }),
-        el('td', { class: 'num' }, el('b', { text: fmtMult(c.multiple) })),
+        el('td', { class: 'num' }, el('b', { text: String(c.intercept) })),
         el('td', { class: 'num', text: c.launches > 0 ? String(c.launches) : '—' }),
+        el('td', { class: 'num', text: fmtMult(c.multiple) }),
         el('td', { text: c.basis })
       ));
     });
     return el('section', { class: 'panel' },
-      el('h2', { text: 'Where the multiples come from' }),
-      el('p', { text: 'Each multiple is the geometric mean of FDV/TVL at launch across real token launches in that category (day-0 and day-7 after launch; TVL from DefiLlama, FDV from first price x max supply). Categories with no launch of their own use the closest measured category, or the global mean. No protocol name is special-cased.' }),
+      el('h2', { text: 'Where the implied values come from' }),
+      el('p', { text: 'Each category gets a power-law intercept, fitted on real token launches: log(FDV) = intercept + 0.418 x log(TVL). The slope is common to every category; the intercept is what differs. On 67 usable launches the power law validates clearly better than constant multiples (5-fold cross-validation median log error about 1.0 versus about 1.44), because FDV grows far slower than TVL — the implied FDV/TVL ratio falls as a protocol gets bigger. The fallback column is the constant multiple for the same category (geometric mean of winsorized FDV/TVL), kept as a documented fallback, not the active model. No protocol name is special-cased.' }),
       el('div', { class: 'table-wrap' },
         el('table', { class: 'calib' },
           el('thead', null, el('tr', null,
             el('th', { scope: 'col', text: 'Category' }),
-            el('th', { scope: 'col', class: 'num', text: 'Launch multiple' }),
+            el('th', { scope: 'col', class: 'num', text: 'Intercept' }),
             el('th', { scope: 'col', class: 'num', text: 'Launches' }),
+            el('th', { scope: 'col', class: 'num', text: 'Fallback multiple' }),
             el('th', { scope: 'col', text: 'Basis' })
           )),
           tbody
         )
       ),
-      el('div', { class: 'note-row' }, el('p', { class: 'sub', text: 'Launches behind the table (15 app-token launches with a computable FDV/TVL): Jupiter, Aerodrome, Morpho, Kamino, Dolomite, EigenLayer, Renzo, ether.fi, Jito, Ethena, Hyperliquid, Drift, Zeta Markets, Wormhole, Usual. Excluded from calibration: chain tokens (Starknet, zkSync, Scroll, Blast, Celestia, Movement, Dymension — valued on ecosystem potential, not TVL), Seamless (~168x on $8M launch TVL, a micro-TVL outlier), and launches with no computable ratio (Puffer, Swell, LayerZero, Ondo, Maple/Syrup, Plume). Full per-launch figures are in the entry research file.' }))
+      el('div', { class: 'note-row' }, el('p', { class: 'sub', text: 'Launches behind the table (67 app-token launches with a computable FDV/TVL; TVL from DefiLlama, FDV from first price x max supply; full per-launch figures are in the entry research file). Excluded from calibration: chain tokens (valued on ecosystem potential, not TVL), launches with no TVL data, micro-TVL launches (max TVL under $5M), and launches with no computable ratio. RWA uses the global intercept because its two usable launches do not make a credible category estimate.' }))
     );
   }
 
@@ -460,14 +478,15 @@
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures and its category. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x MULTIPLE[category] x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
+        'implied = round( exp( INTERCEPT[category] + ' + m.power_slope + ' x ln(tvl_usd) ) x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
       ),
       el('ul', { class: 'method' },
-        el('li', null, el('b', { text: 'MULTIPLE[category]: ' }), 'the geometric mean of FDV/TVL at launch across real launches in the category, winsorized to ' + m.multiple_floor + 'x-' + m.multiple_cap + 'x. The table above shows every value and how many launches back it.'),
+        el('li', null, el('b', { text: 'INTERCEPT[category]: ' }), 'the intercept of log(FDV) on log(TVL) for the category, fitted on 67 real token launches (5-fold cross-validation median log error about 1.0, versus about 1.44 for constant multiples). The common slope ' + m.power_slope + ' means FDV grows far slower than TVL, so the implied FDV/TVL ratio a protocol gets falls as it gets bigger — a small protocol prices at a high ratio, a giant one near or below 1x. The table above shows every intercept and how many launches back it.'),
+        el('li', null, el('b', { text: 'Effective multiple: ' }), 'the ratio shown for a row is the power law\u2019s base divided by that protocol\u2019s TVL — the FDV/TVL the law gives at its size, not a constant. The page recomputes every row from it, so the number on the board and the number in the detail view are the same arithmetic.'),
         el('li', null, el('b', { text: 'Growth: ' }), 'seven-day TVL change from the snapshot, clamped so one hot week cannot carry a row.'),
         el('li', null, el('b', { text: 'Maturity: ' }), 'age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days.'),
         el('li', null, el('b', { text: 'Gas costs: ' }), gasCostsDate() ? 'the farm plan\u2019s per-action figures are measured network fees as of ' + gasCostsDate() + ' (execution only \u2014 they exclude L1 data fees, bridge fees and slippage; the Solana one-time token-account rent is listed separately in the plan).' : 'the farm plan\u2019s per-action figures are static estimates, not measured.'),
-        el('li', null, el('b', { text: 'What the board will not rank: ' }), 'a wrapped, staked or bridged product of a token that already trades (WBTC is Bitcoin on Ethereum, a bridge moves a token that already trades), an exchange product, or a versioned pool. The watchlist\u2019s own exclusion rule is applied to every row, not just the watchlist.'),
+        el('li', null, el('b', { text: 'What the board ranks: ' }), 'every protocol in the snapshot that records no token — the watchlist and all 302 pre-token protocols below it. Protocols that already trade are set aside in the Live token view with their market cap, a fact rather than a model.'),
         el('li', null, el('b', { text: 'What is not here: ' }), 'no fees, no revenue and no social signal, because the sealed snapshot carries none. The model says what the snapshot can support, and nothing else.')
       )
     );
@@ -503,7 +522,7 @@
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
-        el('div', null, el('span', { text: 'Launch multiple (' + (row.category || 'Other') + ')' }), el('b', { class: 'num', text: fmtMult(row.multiple) })),
+        el('div', null, el('span', { text: 'Effective multiple (' + (row.category || 'Other') + ')' }), el('b', { class: 'num', text: fmtMult(row.multiple) })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
@@ -533,6 +552,7 @@
     var shell = el('div', { class: 'shell' });
     shell.appendChild(header());
     shell.appendChild(lede());
+    shell.appendChild(kpiStrip());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') {
