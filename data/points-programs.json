@@ -1,9 +1,9 @@
 {
   "meta": {
-    "total": 15,
+    "total": 16,
     "yes": 11,
-    "unknown": 4,
-    "checked": "2026-11-19",
+    "unknown": 5,
+    "checked": "2026-11-20",
     "rule": "yes = points AND official_source AND checked within 30 days of the build date"
   },
   "programs": {
@@ -20,6 +20,13 @@
       "checked": "2026-11-19",
       "source": "https://paragraph.com/@b14g",
       "program": null
+    },
+    "bitfi-basis": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-20",
+      "source": "https://docs.bitfi.one/points-program/overview",
+      "program": "BitFi Points Program"
     },
     "curvance": {
       "points": true,
@@ -50,11 +57,11 @@
       "program": "Season 3 points"
     },
     "noble": {
-      "points": true,
+      "points": false,
       "official_source": true,
-      "checked": "2026-11-19",
-      "source": "https://points.noble.xyz",
-      "program": "Noble Points (Season 2)"
+      "checked": "2026-11-20",
+      "source": "https://github.com/noble-assets/dollar/releases/tag/v2.3.0",
+      "program": "Noble Points (Season 2 — ended Apr 2026)"
     },
     "onre": {
       "points": true,

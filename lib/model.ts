@@ -9,8 +9,17 @@
 // Implied value is the estimated fully-diluted value of the token at launch, and follows only from the
 // snapshot's own figures plus a per-category power law fitted on real launches:
 //
-//   implied = exp(INTERCEPT[category] + SLOPE x ln(tvl_usd)) x growthMult x maturityMult
+//   implied_if_launches = exp(INTERCEPT[category] + SLOPE x ln(tvl_usd)) x growthMult x maturityMult
+//   implied_value_usd   = round(implied_if_launches x token_odds)
 //
+//   token_odds  the share of the protocol's peers — same age, size and category — that already
+//               record a token, from a logistic model fitted on all 758 snapshot protocols
+//               (research/token-odds-model.md). Token odds = peers' record, not a launch forecast:
+//               the model is a cross-section snapshot, not a prediction of a future launch, and
+//               the dashboard must say so. The fitted age_missing boost (+1.48 logit) is
+//               deliberately NOT applied: it is a DefiLlama bookkeeping artefact (rows without a
+//               listed_at date), not a launch signal, so the 7 board rows without listed_at get
+//               their no-boost odds instead (research §4.4).
 //   INTERCEPT[category]  the intercept of log(FDV) on log(TVL) for that category, fitted on the real
 //                        launches in research/comparables-v2.json (67 usable launches; 5-fold CV
 //                        median log error ~1.0 vs ~1.44 for constant multiples). A category with no
@@ -232,6 +241,28 @@ export interface FarmStep {
   time: string;
 }
 
+/** The multiplicative decomposition of one row's implied value: base_usd x growth x maturity x odds = implied_value_usd (within rounding). base_usd is the power law's dollar base, exp(intercept + slope x ln(TVL)); growth and maturity are the value model's own multipliers; odds is the token odds. */
+export interface ValueParts {
+  base_usd: number;
+  growth: number;
+  maturity: number;
+  odds: number;
+}
+
+/**
+ * One nearest priced peer: a live-token protocol, same category first, nearest by TVL.
+ * mcap_multiple is MARKET CAP / TVL — the snapshot carries market cap, not FDV, so no
+ * FDV/TVL multiple can be shown for a peer. Never read it as an FDV multiple.
+ */
+export interface NearestPeer {
+  slug: string;
+  name: string;
+  category: string | null;
+  tvl_usd: number;
+  mcap_usd: number;
+  mcap_multiple: number;
+}
+
 /** One row of board.json: the ranked board's row. */
 export interface BoardRow {
   rank: number;
@@ -247,7 +278,32 @@ export interface BoardRow {
   symbol: string | null;
   token_status: 'pre-token';
   age_days: number | null;
+  /** The post-odds implied value: round(implied_if_launches_usd x token_odds). The board ranks on this. */
   implied_value_usd: number;
+  /** The pre-odds implied value: the power law's launch value if the token launches. */
+  implied_if_launches_usd: number;
+  /** The token odds (0-1): the peers' record, not a launch forecast. See tokenOdds(). */
+  token_odds: number;
+  /** The farm verdict from the model's economics — NOT a recommendation to deposit. See farmVerdictFor(). */
+  farm_verdict: 'FARM' | 'MARGINAL-THIN' | 'SKIP';
+  /** The verdict's net in USD: slice - fees - T-bill forgone. */
+  verdict_net_usd: number;
+  /** The verdict's net per hands-on hour in USD. */
+  verdict_net_per_hour_usd: number;
+  /** The farmer's expected slice of the drop in USD (pro-rata by deposit share of TVL). */
+  verdict_slice_usd: number;
+  /** The farm plan's total gas in USD (0 when unmeasured — see verdict_fees_measured). Four decimals, the plan's own precision ($0.1592): a sub-cent figure such as Doppler's $0.0001 survives instead of rounding to $0.00. */
+  verdict_fees_usd: number;
+  /** Whether verdict_fees_usd is a measured gas total (false: 0 is a placeholder, not a measurement). */
+  verdict_fees_measured: boolean;
+  /** The T-bill income forgone by holding the deposit instead, in USD. */
+  verdict_tbill_usd: number;
+  /** 'verified': the program is verified, so the verdict rests on a real plan. 'conditional': the row is unknown — the verdict is what WOULD pay IF the program verifies AND the token launches. */
+  verdict_basis: 'verified' | 'conditional';
+  /** The multiplicative parts of the implied value: base x growth x maturity x odds = implied_value_usd (within rounding). */
+  value_parts: ValueParts;
+  /** The 2-3 nearest live-token protocols by TVL, same category first, with their market-cap multiples. */
+  nearest_peers: NearestPeer[];
   model: {
     /** The effective FDV/TVL ratio the power law gives this protocol at its TVL: base / tvl_usd. */
     multiple: number;
@@ -285,6 +341,18 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
+  implied_if_launches_usd: number;
+  token_odds: number;
+  farm_verdict: 'FARM' | 'MARGINAL-THIN' | 'SKIP';
+  verdict_net_usd: number;
+  verdict_net_per_hour_usd: number;
+  verdict_slice_usd: number;
+  verdict_fees_usd: number;
+  verdict_fees_measured: boolean;
+  verdict_tbill_usd: number;
+  verdict_basis: 'verified' | 'conditional';
+  value_parts: ValueParts;
+  nearest_peers: NearestPeer[];
   multiple: number;
   growth_multiplier: number;
   maturity_multiplier: number;
@@ -322,6 +390,50 @@ export interface CalibrationRow {
   basis: string;
 }
 
+/** One bucket of the protocol ledger: how many snapshot protocols it holds and their TVL. */
+export interface LedgerBucket {
+  count: number;
+  tvl_usd: number;
+}
+
+/**
+ * The protocol ledger: every one of the 758 snapshot protocols in exactly one bucket, so the
+ * buckets sum to 758. ranked: the board. live_token_shown / live_token_other: protocols that
+ * already record a token (the 24 the dashboard's Live view shows, and the rest). The excluded
+ * buckets are pre-token protocols the board may not rank, by the first rule that excludes
+ * them: excluded_category (Bridge / Canonical Bridge / Liquid Staking / Liquid Restaking /
+ * Restaked BTC / CEX), versioned (a name ending in a release whose base slug is itself in the
+ * snapshot — a versioned pool of another protocol), wrapped_or_staked (a wrapped, staked or
+ * receipt-token name, where "staking" counts only outside Staking Pool / Farm / Chain),
+ * exchange_name (an exchange's own name), other_excluded (a pre-token protocol no rule
+ * catches — 0 by construction, kept so a future rule change shows up as a non-zero bucket
+ * instead of a silent miscount).
+ */
+export interface Ledger {
+  total: number;
+  ranked: LedgerBucket;
+  live_token_shown: LedgerBucket;
+  live_token_other: LedgerBucket;
+  excluded_category: LedgerBucket;
+  /** The excluded_category bucket broken down by category (CEX, Liquid Staking, ...). */
+  excluded_category_by_category: Record<string, number>;
+  versioned: LedgerBucket;
+  wrapped_or_staked: LedgerBucket;
+  exchange_name: LedgerBucket;
+  other_excluded: LedgerBucket;
+}
+
+/** The verdict model's parameters, so the dashboard can state — and recompute — the verdicts. */
+export interface VerdictParams {
+  /** The share of the launch FDV allocated to farmers (5%). */
+  drop_share: number;
+  /** The annual T-bill rate the forgone income is priced at (4%). */
+  tbill_annual_rate: number;
+  /** FARM needs net above this (USD) AND net/hour above farm_net_per_hour_usd. */
+  farm_net_usd: number;
+  farm_net_per_hour_usd: number;
+}
+
 /** Everything the dashboard needs: the board, the live set, and the model it runs. */
 export interface RadarData {
   as_of: string;
@@ -338,6 +450,12 @@ export interface RadarData {
   rows: RadarRow[];
   live: LiveRow[];
   gas_costs: GasCostsSnapshot | null;
+  /** The token-odds model's validation numbers (ODDS_EVIDENCE). */
+  odds_evidence: OddsEvidence;
+  /** The farm-verdict model's parameters. */
+  verdict_params: VerdictParams;
+  /** The protocol ledger: all 758 snapshot protocols, exactly one bucket each. */
+  ledger: Ledger;
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -384,6 +502,125 @@ export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: Mo
 }
 
 /**
+ * Token odds (research/token-odds-model.md, fitted 2026-11-20 on all 758 snapshot protocols,
+ * label = symbol non-null, 416 live / 342 pre-token; IRLS fit, cross-checked against scipy BFGS
+ * to 1e-7). Logistic regression:
+ *
+ *   P(token) = sigmoid(eta)
+ *   eta = -3.8255402899 + 0.6421129386 x age_years + 0.1431663736 x ln(TVL)
+ *         - 0.0219587511 x growth_w + category_effect
+ *
+ *   age_years   (as_of - listed_at) / 365.25; a row without listed_at imputes the observed
+ *               median age (1.8535 years) — and gets NO age_missing boost (see below).
+ *   growth_w    change_7d winsorized to [-60, +120] (the value model's own clamp); a row
+ *               without change_7d imputes the observed median (-8.23335).
+ *   category    one dummy per snapshot category with n >= 15 (14 categories); every other
+ *               category pools into "Other", the reference level (effect 0).
+ *
+ * Token odds = peers' record, not a launch forecast. The model predicts P(already records a
+ * token | age, TVL, growth, category) from one snapshot; for a board row — currently pre-token —
+ * the honest reading is "the share of peers its age/size/category that already record a token".
+ * It is a cross-section, not a survival model: a protocol that survived 4 years without a token
+ * has already survived 4 years without launching, so the true P(launch | still pre-token at
+ * this age) is lower. The dashboard must carry that label.
+ *
+ * The fitted age_missing term (+1.4802846397 logit, OR 4.39) is deliberately NOT applied.
+ * 89 of the 113 snapshot rows without listed_at are symbol-live: missing listed_at marks legacy
+ * / version rows in DefiLlama's bookkeeping, not launch intent. Applying it would lift the 7
+ * board rows without listed_at to odds 0.72-0.89 on bookkeeping alone (research §4.4); their
+ * shipped odds are the no-boost values (defi-saver 0.64, lightning 0.58, noble 0.52,
+ * plasma-one 0.46, kava-mint 0.37, set-protocol 0.49, abstract 0.50).
+ *
+ * Validation (research/token-odds-model.md §3, §7): Brier 0.181 on the 80/20 test split and
+ * 0.192 on 5-fold CV vs a 0.248 base-rate baseline; AUC out-of-fold 0.776; calibration slope
+ * 0.83, intercept +0.02 (slightly overconfident at the extremes). Value-model held-out
+ * evidence, same report: leave-one-out typical miss x2.98 (flat x3.80) and walk-forward
+ * x2.96 (flat x8.82); range holds 47-52% (target 50%).
+ */
+export const ODDS_INTERCEPT = -3.8255402899;
+export const ODDS_AGE = 0.6421129386;
+export const ODDS_LN_TVL = 0.1431663736;
+export const ODDS_GROWTH = -0.0219587511;
+/** The fitted age_missing coefficient (+1.4803 logit). Fitted, validated — and NOT applied: see tokenOdds. */
+export const ODDS_AGE_MISSING = 1.4802846397;
+/** The observed median age (years) among snapshot rows with a listed_at date: the imputation for rows without one. */
+export const ODDS_AGE_MEDIAN_YEARS = 1.8535249829;
+/** The observed median change_7d among snapshot rows with one: the imputation for rows without one. */
+export const ODDS_GROWTH_MEDIAN = -8.23335;
+/** The category effects (vs "Other"): the 14 snapshot categories with n >= 15. */
+export const ODDS_CATEGORY: Record<string, number> = {
+  'Basis Trading': 0.9195976033,
+  Bridge: -0.5893721998,
+  CDP: -0.3963748363,
+  CEX: -2.1710562025,
+  'Canonical Bridge': -1.0222382044,
+  Derivatives: 0.0514450693,
+  Dexs: 1.017428647,
+  Lending: 1.0317324591,
+  'Liquid Staking': -0.6190192648,
+  'Onchain Capital Allocator': -0.7704664091,
+  RWA: 0.1214919717,
+  'Risk Curators': -1.4153037969,
+  Yield: 0.5548127002,
+  'Yield Aggregator': 0.0605703248,
+};
+
+/** The odds model's validation numbers, as the dashboard's evidence strip states them. */
+export interface OddsEvidence {
+  /** 5-fold cross-validated Brier score (0.192) and 80/20 test Brier (0.181). */
+  brier_cv: number;
+  brier_test: number;
+  /** The constant base-rate (0.549) baseline's Brier score. */
+  brier_baseline: number;
+  /** Out-of-fold calibration slope (ideal 1.0) and intercept (ideal 0.0). */
+  calibration_slope: number;
+  calibration_intercept: number;
+  /** Out-of-fold AUC. */
+  auc_oof: number;
+  /** Value model, typical miss (exp of median |log error|): leave-one-out and walk-forward. */
+  loo_typical_miss: number;
+  walkforward_typical_miss: number;
+  /** The same, for the flat constant-multiple baseline. */
+  flat_loo_typical_miss: number;
+  flat_walkforward_typical_miss: number;
+  /** Share of actual FDVs inside the 50% interval built from held-out residuals (low-high across the three model specs). */
+  range_holds_low: number;
+  range_holds_high: number;
+  /** What the odds label means: symbol non-null in the snapshot. */
+  label: string;
+}
+export const ODDS_EVIDENCE: OddsEvidence = {
+  brier_cv: 0.192,
+  brier_test: 0.181,
+  brier_baseline: 0.248,
+  calibration_slope: 0.83,
+  calibration_intercept: 0.02,
+  auc_oof: 0.776,
+  loo_typical_miss: 2.98,
+  walkforward_typical_miss: 2.96,
+  flat_loo_typical_miss: 3.8,
+  flat_walkforward_typical_miss: 8.82,
+  range_holds_low: 0.47,
+  range_holds_high: 0.52,
+  label: 'symbol non-null (416 of 758 snapshot protocols record a token)',
+};
+
+/** One protocol's token odds (0-1) under the fitted logistic model, without the age_missing boost. */
+export function tokenOdds(p: SnapshotProtocol, asOf: string): number {
+  const age = ageDays(asOf, p.listed_at);
+  const ageYears = age === null ? ODDS_AGE_MEDIAN_YEARS : age / 365.25;
+  const growth = p.change_7d === null ? ODDS_GROWTH_MEDIAN : Math.min(120, Math.max(-60, p.change_7d));
+  const categoryEffect = p.category !== null && Object.prototype.hasOwnProperty.call(ODDS_CATEGORY, p.category) ? ODDS_CATEGORY[p.category]! : 0;
+  const eta =
+    ODDS_INTERCEPT +
+    ODDS_AGE * ageYears +
+    ODDS_LN_TVL * Math.log(Math.max(1, p.tvl_usd)) +
+    ODDS_GROWTH * growth +
+    categoryEffect;
+  return 1 / (1 + Math.exp(-eta));
+}
+
+/**
  * Whether a protocol records no token at all in the snapshot (no market cap, no CoinGecko id,
  * no symbol). A HEURISTIC for board membership only — it is NOT a verified token status and
  * must never be displayed as "no token": DefiLlama leaves the token fields blank for several
@@ -395,8 +632,38 @@ export function isPreToken(p: SnapshotProtocol): boolean {
   return p.mcap_usd === null && p.gecko_id === null && p.symbol === null;
 }
 
-/** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
+/**
+ * DefiLlama's version-marker rule, narrowed (audit P1-3, research/versioned-wrapped-recheck.md):
+ * a name ending in a release is a pool of another protocol ONLY when that other protocol — the
+ * base slug, the slug with its release suffix stripped — is itself in the snapshot. In this
+ * snapshot no pre-token versioned row has its base present (aera-v2/v3, bdex-v3,
+ * rocketswap-anubis-v2 and the other eight are the protocol, not a pool of one), so the old
+ * blanket rule threw away 11 standalone protocols; the only rows whose base exists
+ * (curve-llamalend-v2, pancakeswap-amm-v3, sushiswap-v3) already record a token.
+ */
 const VERSIONED = /\s(V\d+(\.\d+)?|v\d+(\.\d+)?|\d+\.\d+)$/;
+
+/** The slug a versioned name's base protocol would carry: the slug with its release suffix
+ * stripped ("rocketswap-anubis-v2" -> "rocketswap-anubis", "bancor-v2.1" -> "bancor",
+ * "alpaca-finance-2.0" -> "alpaca-finance"). Null when the slug carries no release suffix —
+ * then no base can be verified, and the row is treated as a standalone protocol. */
+export function versionBaseSlug(slug: string): string | null {
+  const m = /^(.*?)(?:-v\d+(?:\.\d+)?|-V\d+(?:\.\d+)?|-\d+\.\d+)$/.exec(slug);
+  return m === null ? null : m[1]!;
+}
+
+/**
+ * Whether a protocol is a versioned pool of another snapshot protocol: its name ends in a
+ * release AND its base slug is in the snapshot. Without a slug set to check against, the old
+ * blanket rule applies (any versioned name is a pool) — the conservative fallback for a
+ * caller that cannot prove the base is absent.
+ */
+export function isVersionedPool(p: SnapshotProtocol, snapshotSlugs?: ReadonlySet<string>): boolean {
+  if (!VERSIONED.test(p.name)) return false;
+  if (snapshotSlugs === undefined) return true;
+  const base = versionBaseSlug(p.slug);
+  return base !== null && snapshotSlugs.has(base);
+}
 
 /**
  * The watchlist's own exclusion rule, applied to every board row, not just the watchlist: a wrapped,
@@ -406,19 +673,44 @@ const VERSIONED = /\s(V\d+(\.\d+)?|v\d+(\.\d+)?|\d+\.\d+)$/;
  * The snapshot carries no parentProtocol field, so that part of the house rule cannot be applied.
  */
 const EXCLUDED_CATEGORIES = new Set(['Bridge', 'Canonical Bridge', 'Liquid Staking', 'Liquid Restaking', 'Restaked BTC', 'CEX']);
-const WRAPPED_WORD = /\bwrapped\b|\bstaked\b|\bstaking\b/i;
+/** A wrapped product's name: "wrapped" is the receipt-token word. "staked" / "staking" are NOT in
+ * this pattern (audit P1-4): every "staked" name in this snapshot is a Liquid Staking row the
+ * category rule already excludes, and "staking" names a protocol's own activity in its staking
+ * categories — see STAKING_WORD below. */
+const WRAPPED_WORD = /\bwrapped\b/i;
+/** "staking" in the name: the protocol's own activity when its category says so (a staking pool
+ * stakes, a farm stakes, a chain stakes), a receipt-token product anywhere else. */
+const STAKING_WORD = /\bstaking\b/i;
+/** The categories where "staking" in the name is the protocol's own activity, not a receipt token. */
+const STAKING_ALLOWED_CATEGORIES = new Set(['Staking Pool', 'Farm', 'Chain']);
 /** A staked receipt token in the name: stHYPE, stETH, stSOL — a token that already trades. */
 const ST_TOKEN = /\bst[A-Z]{2,}/;
 const EXCHANGE_PREFIX = /^(Binance|Coinbase|Bybit|Kraken|Bitget|OKX|Bitfinex|Gemini)\b/;
 
-/** Whether a protocol is one the board may rank: pre-token, and not a wrapped, staked or bridged product of a token that trades, not an exchange, not a versioned pool. */
-export function isRankable(p: SnapshotProtocol): boolean {
+/** Whether a protocol's name marks it as a wrapped / staked receipt-token product: "wrapped", or
+ * "staking" outside the staking categories, or a staked receipt-token symbol. The ledger's
+ * wrapped_or_staked bucket uses this same rule, so the bucket and the board never disagree. */
+export function isWrappedOrStakedName(p: SnapshotProtocol): boolean {
+  return (
+    WRAPPED_WORD.test(p.name) ||
+    (STAKING_WORD.test(p.name) && (p.category === null || !STAKING_ALLOWED_CATEGORIES.has(p.category))) ||
+    ST_TOKEN.test(p.name)
+  );
+}
+
+/**
+ * Whether a protocol is one the board may rank: pre-token, and not a wrapped, staked or bridged
+ * product of a token that trades, not an exchange, not a versioned pool of another snapshot
+ * protocol. `snapshotSlugs` is the snapshot's slug set: a versioned name is excluded only when
+ * its base slug is in it (see isVersionedPool); without the set the old blanket versioned rule
+ * applies.
+ */
+export function isRankable(p: SnapshotProtocol, snapshotSlugs?: ReadonlySet<string>): boolean {
   return (
     isPreToken(p) &&
     (p.category === null || !EXCLUDED_CATEGORIES.has(p.category)) &&
-    !VERSIONED.test(p.name) &&
-    !WRAPPED_WORD.test(p.name) &&
-    !ST_TOKEN.test(p.name) &&
+    !isVersionedPool(p, snapshotSlugs) &&
+    !isWrappedOrStakedName(p) &&
     !EXCHANGE_PREFIX.test(p.name)
   );
 }
@@ -550,21 +842,28 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   // The early radar: every other rankable pre-token protocol, strongest TVL first. The v1
   // exclusions are restored (Hunter's decision, 20 Nov 2026): a wrapped, staked or bridged
   // product of a token that already trades is not a protocol waiting on a launch of its own,
-  // and neither is an exchange or a versioned pool. Never a replacement for a watchlist row:
-  // a chosen protocol stays chosen.
+  // and neither is an exchange or a versioned pool of another snapshot protocol (a versioned
+  // name whose base slug is absent from the snapshot IS the protocol — audit P1-3).
+  // Never a replacement for a watchlist row: a chosen protocol stays chosen.
+  const snapshotSlugs = new Set(snapshot.protocols.map((p) => p.slug));
   const early = snapshot.protocols
-    .filter((p) => !chosen.has(p.slug) && isRankable(p))
+    .filter((p) => !chosen.has(p.slug) && isRankable(p, snapshotSlugs))
     .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   for (const p of early) chosen.set(p.slug, p);
 
   const scored = [...chosen.values()].map((p) => {
     const { implied, multiple, intercept, growthPct, growthMult, maturityMult, age } = impliedValue(p, snapshot.as_of, model);
-    return { p, implied, multiple, intercept, growthPct, growthMult, maturityMult, age };
+    // implied is the pre-odds launch value; the board ranks on the post-odds value.
+    const odds = tokenOdds(p, snapshot.as_of);
+    const impliedPostOdds = Math.max(1, Math.round(implied * odds));
+    return { p, impliedIfLaunches: implied, odds, implied: impliedPostOdds, multiple, intercept, growthPct, growthMult, maturityMult, age };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => {
     const ps = pointsStatusFor(s.p.slug);
     const tv = tokenVerificationFor(s.p);
+    const verdict = farmVerdictFor(s.p, s.age, ps, s.impliedIfLaunches, s.odds);
+    const baseUsd = s.multiple * Math.max(1, s.p.tvl_usd);
     return {
     rank: i + 1,
     slug: s.p.slug,
@@ -580,6 +879,23 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     token_status: 'pre-token',
     age_days: s.age,
     implied_value_usd: s.implied,
+    implied_if_launches_usd: s.impliedIfLaunches,
+    token_odds: round4(s.odds),
+    farm_verdict: verdict.verdict,
+    verdict_net_usd: verdict.net_usd,
+    verdict_net_per_hour_usd: verdict.net_per_hour_usd,
+    verdict_slice_usd: verdict.slice_usd,
+    verdict_fees_usd: verdict.fees_usd,
+    verdict_fees_measured: verdict.fees_measured,
+    verdict_tbill_usd: verdict.tbill_usd,
+    verdict_basis: verdict.basis,
+    value_parts: {
+      base_usd: Math.round(baseUsd),
+      growth: round4(s.growthMult),
+      maturity: round4(s.maturityMult),
+      odds: round4(s.odds),
+    },
+    nearest_peers: nearestPeersFor(s.p, snapshot),
     model: {
       multiple: round3(s.multiple),
       multiple_basis: interceptBasis(s.p.category),
@@ -709,7 +1025,19 @@ const GAS_CHAIN_KEY: Record<string, string> = {
   'bnb chain': 'bsc',
   avalanche: 'avax',
   solana: 'solana',
+  ink: 'ink',
+  plasma: 'plasma',
 };
+
+/**
+ * Chains with no token-allowance model, matched case-insensitively on the chain's first
+ * name: Solana (SPL deposits move by direct transfer), Ripple/XRPL (no approve; a Payment
+ * costs 10 drops, tokens move through trust lines) and Noble/Cosmos appchains (no ERC-20
+ * approve; native transfer or delegation). A farm plan on one of these has no approve step,
+ * no revoke and no approval cost; the Solana one-time token-account rent stays, named on
+ * the main action. Anything not listed here is treated as an EVM-style allowance chain.
+ */
+const NO_ALLOWANCE_CHAINS = new Set(['solana', 'ripple', 'xrpl', 'noble', 'cosmos']);
 
 /** The snapshot's short date, e.g. "19 Nov 2026", or null when there is no snapshot. */
 export function gasCostsDate(): string | null {
@@ -763,7 +1091,7 @@ function gasPhrase(n: number): string {
 }
 
 /** The L2 chains: only there does the execution-only gas figure also exclude the L1 data fee. */
-const L2_CHAINS = new Set(['arbitrum', 'base', 'linea', 'optimism', 'scroll']);
+const L2_CHAINS = new Set(['arbitrum', 'base', 'ink', 'linea', 'optimism', 'plasma', 'scroll']);
 
 /** A measured gas figure's label: "excl. L1 data fee" belongs to L2 chains only. */
 function gasLabel(chain: string, date: string): string {
@@ -798,28 +1126,7 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
   return `Deposit $${capital} of USDC into ${name} on ${chain} and keep the position open.`;
 }
 
-/** The category's second qualifying action: a different verb from the first, so the plan is not one move repeated. */
-function secondActionFor(p: SnapshotProtocol, capital: number, chain: string): string {
-  const c = (p.category ?? '').toLowerCase();
-  const name = p.name;
-  if (c.includes('risk curator') || c.includes('curator') || c.includes('allocator')) return `Add a second deposit to another ${name}-curated vault on ${chain}, in a different asset.`;
-  if (c.includes('restak') || c.includes('staking')) return `Delegate a second stake through ${name} on ${chain} to a different operator or validator.`;
-  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `Supply a second asset as collateral to ${name} on ${chain}, in a different market than the first supply.`;
-  if (c.includes('dex')) return `Provide a second, smaller liquidity position in a different ${name} pool on ${chain}.`;
-  if (c.includes('yield') || c.includes('leveraged farm')) return `Deposit into a second ${name} vault on ${chain}, in a different asset than the first deposit.`;
-  if (c.includes('bridge') || c.includes('cross chain')) return `Bridge a second, smaller amount back through ${name} so both directions are used.`;
-  if (c.includes('perpetual') || c.includes('derivative')) return `Open a second, smaller hedge on ${name} in a different market.`;
-  if (c.includes('prediction')) return `Place a second position on ${name} in a different market.`;
-  if (c.includes('stable') || c.includes('basis')) return `Stake the receipt token from ${name} into its yield vault on ${chain}.`;
-  if (c.includes('rwa')) return `Mint a second, smaller amount of a different real-world asset on ${name}.`;
-  if (c.includes('insurance')) return `Renew the cover on ${name} once so the policy spans two periods.`;
-  if (c.includes('payment')) return `Send a second payment through the same ${name} channel on ${chain}.`;
-  if (c.includes('governance')) return `Vote on a second proposal through ${name} on ${chain}.`;
-  if (c.includes('chain')) return `Delegate to a second validator through ${name} on ${chain}.`;
-  return `Use ${name}'s app on ${chain} a second time, in a different feature than the first deposit.`;
-}
-
-/** Which gas figure an action costs: a bridge when the category bridges, a deposit otherwise. The main action and the second action bridge together, so one rule prices both. */
+/** Which gas figure an action costs: a bridge when the category bridges, a deposit otherwise. The main action bridges exactly when the category does. */
 function actionKindFor(p: SnapshotProtocol): 'deposit' | 'bridge' {
   const c = (p.category ?? '').toLowerCase();
   return c.includes('bridge') || c.includes('cross chain') ? 'bridge' : 'deposit';
@@ -832,8 +1139,15 @@ function actionKindFor(p: SnapshotProtocol): 'deposit' | 'bridge' {
  * the source is the project's own domain (official_source) AND the check is within 30 days of
  * the build date. Anything absent from the registry, or failing the rule, is unknown, not "no".
  * The registry names the program in the farm plan's points-check step — it never changes a value.
- * Counts at the last check (2026-11-19): 15 total, 11 verified, 4 unknown (b14g, firelight,
- * veda, curvance). Two corrections vs early notes: Mezo "mats" ended January 2026 (MEZO is live)
+ * Counts at the last check (2026-11-20): 16 total, 11 verified, 5 unknown (b14g, firelight,
+ * veda, curvance, noble). BitFi Basis added 2026-11-20, verified through bfUSD only
+ * (docs.bitfi.one/points-program/overview: "The BitFi Points Program is now live"); the same
+ * page's bfBTC banner contradicts its bfBTC HODL section, so no bfBTC plan is written.
+ * Noble Points (Season 2) ENDED April 2026 (Dollar v2.3.0 disabled vault locking; Noble
+ * v11.4.0 unlocked all staked positions), so Noble is unknown with an ended-program plan:
+ * no deposit, no delegation — holding USDC never earned points, and public delegation
+ * does not exist on its permissioned proof-of-authority chain.
+ * Two corrections vs early notes: Mezo "mats" ended January 2026 (MEZO is live)
  * and Plume Nest Points Season 1 ended 13 March 2026, so neither is listed. Re-verified
  * 2026-11-19 against each project's own domain (registry rule: official source only): b14g,
  * firelight and veda REMOVED — b14g has no official-domain proof the program is still live after
@@ -929,7 +1243,8 @@ export function pointsIssue(board: BoardRow[]): string | null {
 
 /**
  * A protocol's farm plan, in two outputs by points status. A verified program gets a full
- * farm plan (eleven steps); an unverified one gets a verification plan only (six steps) —
+ * farm plan (eleven steps; ten on a chain without token allowances, which has no approve
+ * step); an unverified one gets a verification plan only (six steps) —
  * what to check, on which domain, and what would turn it into a yes or a no. The
  * verification plan never sizes or takes a deposit. Every claim the plan makes names its
  * source (the registry's program, domain and check date) or is labelled a hypothesis in
@@ -965,64 +1280,106 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, ps: PointsSta
   // staking USDat into the sUSDat vault needs its own approval (the vault's deposit uses
   // transferFrom), so the plan has 4 approvals, not 2 — approve USDC, approve USDat, then
   // revoke both at the exit. The exit withdraws in two transactions (request the unstake,
-  // then claim from the withdrawal queue), so 4 actions, not 3. And the weekly on-chain
-  // action is optional: the program names no action that counts, so holding is enough and
-  // the default total carries no weekly gas. The total step quotes the same figures, so
-  // its sum is the sum of the figures the steps quote.
+  // then claim from the withdrawal queue), so 4 actions, not 3. BitFi Basis is likewise
+  // slug-specific (docs.bitfi.one, bfUSD only): approve USDC, mint bfUSD, stake it, then
+  // unstake and redeem at the exit — 2 approvals, 4 actions. The total step quotes the
+  // same figures, so its sum is the sum of the figures the steps quote.
+  // No weekly on-chain action is ever counted: no verified program names one that counts,
+  // so holding is enough and the weekly step carries no gas for any row. Chains without
+  // allowances have no approve step at all, so approveCount is 0 there and the exit
+  // revokes nothing. The generic second step is a conditional check, not an action, so its
+  // gas never enters the default total: a deposit row counts main + withdraw (2), a bridge
+  // row counts its bridge (1) plus the withdraw (1).
   const isSaturn = p.slug === 'saturn';
-  const weeklyCount = isSaturn ? 0 : weeks - 1;
-  const approveCount = isSaturn ? 4 : 2;
-  const depCount = isSaturn ? 4 : (kind === 'deposit' ? 2 : 0) + weeklyCount + 1; // main + second + weekly + withdraw
-  const bridgeCount = kind === 'bridge' ? 2 : 0; // main + second
+  const isBitfi = p.slug === 'bitfi-basis';
+  const isDoppler = p.slug === 'doppler-finance';
+  const noAllowance = NO_ALLOWANCE_CHAINS.has(chain.toLowerCase());
+  // Native fee for the one verified row whose chain the gas snapshot does not cover
+  // (gas worker, verified 20 Nov 2026): XRPL burns 10 drops per standard transaction.
+  // The full verified text is quoted in the total step; the other steps quote the short
+  // form. Its total is not a measured USD sum — the cost field says so. (Noble's native
+  // fee text was removed 2026-11-20: its program ended in April 2026, so Noble no longer
+  // gets a farm plan at all.)
+  const DOPPLER_FEE = 'XRPL tidak punya approve/allowance. Setiap transaksi standar membakar 10 drops (0,00001 XRP ≈ $0,00001 pada harga XRP $0,95, 20 Nov 2026) — fee dihancurkan, bukan dibayar ke siapa pun. Akun baru wajib didanai 1 XRP (base reserve, ≈ $0,95); tiap trust line di luar dua yang pertama menambah reserve 0,2 XRP (≈ $0,19). Sumber: xrpl.org/docs/concepts/transactions/transaction-cost dan /accounts/reserves.';
+  const nativeCore = isDoppler
+    ? '10 drops (≈ $0.00001) burned per transaction'
+    : null;
+  const nativeFee = nativeCore === null ? null : `${nativeCore}; no approve on XRPL`;
+  const nativeWithdraw = nativeCore === null ? null : `${nativeCore} to withdraw`;
+  const approveCount = isSaturn ? 4 : isBitfi ? 2 : noAllowance ? 0 : 2;
+  const depCount = isSaturn ? 4 : isBitfi ? 4 : kind === 'deposit' ? 2 : 1; // main + withdraw; a bridge row counts the withdraw only
+  const bridgeCount = isSaturn || isBitfi ? 0 : kind === 'bridge' ? 1 : 0; // the main bridge only
   const total = gas.measured ? approve * approveCount + deposit * depCount + bridge * bridgeCount + rent : null;
   const pctStr = total === null ? null : ((total / capital) * 100 >= 1 ? ((total / capital) * 100).toFixed(1) : ((total / capital) * 100).toFixed(2));
-  const approveCost = gas.measured
-    ? gas.rent !== null
-      ? `about ${fmtUsd(approve + rent)} for the first transaction on ${chain} (a one-time token-account rent of ${fmtUsd(rent)}, plus ${gasPhrase(approve)})`
-      : gasPhrase(approve)
-    : 'gas unmeasured on this chain';
-  const totalText = gas.measured
-    ? `Week ${weeks}: Add up the plan's gas: ${approveCount} approvals at ${gasPhrase(approve)} each and ${depCount} action${depCount === 1 ? '' : 's'} at ${gasPhrase(deposit)} each${bridgeCount > 0 ? ` and ${bridgeCount} bridge${bridgeCount === 1 ? '' : 's'} at ${gasPhrase(bridge)} each` : ''}${gas.rent !== null ? `, plus a one-time token-account rent of ${fmtUsd(rent)}` : ''}${isSaturn ? `. Weekly checks add no gas; an optional weekly action adds ${gasPhrase(deposit)}` : ''}.`
-    : `Week ${weeks}: Add up the plan's gas: this chain's gas is unmeasured, so the plan's total gas cannot be calculated — do not guess a figure.`;
-  const totalCost = gas.measured
-    ? `${total !== null && total > 0 ? `about ${fmtUsd(total)}` : 'under $0.0001'} in total, about ${pctStr}% of the $${capital} deposit; ${label}`
-    : 'gas unmeasured, total cannot be calculated';
-  const action = p.slug === 'saturn'
+  const approveCost = gas.measured ? gasPhrase(approve) : 'gas unmeasured on this chain';
+  const totalText = isDoppler
+    ? `Week ${weeks}: Add up the plan's gas: ${DOPPLER_FEE} Each transaction costs under $0.01.`
+      : gas.measured
+        ? `Week ${weeks}: Add up the plan's gas: ${approveCount > 0 ? `${approveCount} approvals at ${gasPhrase(approve)} each and ` : ''}${depCount} action${depCount === 1 ? '' : 's'} at ${gasPhrase(deposit)} each${bridgeCount > 0 ? ` and ${bridgeCount} bridge${bridgeCount === 1 ? '' : 's'} at ${gasPhrase(bridge)} each` : ''}${gas.rent !== null ? `, plus a one-time token-account rent of ${fmtUsd(rent)}` : ''}.`
+        : `Week ${weeks}: Add up the plan's gas: this chain's gas is unmeasured, so the plan's total gas cannot be calculated — do not guess a figure.`;
+  const totalCost = isDoppler
+    ? 'under $0.01 per transaction; total cannot be calculated precisely in USD'
+      : gas.measured
+        ? `${total !== null && total > 0 ? `about ${fmtUsd(total)}` : 'under $0.0001'} in total, about ${pctStr}% of the $${capital} deposit; ${label}`
+        : 'gas unmeasured, total cannot be calculated';
+  const action = isSaturn
     ? `Mint $${capital} of USDat with USDC through ${p.name} on ${chain}. Minting is permissioned: only onboarded (whitelisted) addresses can mint. Gas below assumes the same ~130k gas units as a standard deposit; not measured for minting.`
-    : actionFor(p, capital, chain);
-  const second = secondActionFor(p, capital, chain);
-  // The second action is quoted at the same unit gas figure as the main action (secondCost
-  // above); the real cost can be higher — the note says so instead of inventing a number.
-  // Saturn's second action is its own step below (approve USDat, then stake it).
-  const secondNote = 'Quoted at the same unit gas figure as the main action above; the real cost can be higher.';
+    : isBitfi
+      ? `Mint $${capital} of bfUSD with USDC through ${p.name} on ${chain}. bfUSD is BitFi's own token, not Binance BFUSD. Gas below assumes the same ~130k gas units as a standard deposit; not measured for minting.`
+      : actionFor(p, capital, chain);
+  // Solana's one-time token-account rent is charged on the first transaction that receives
+  // the token — now the main action, since there is no approve step on a chain without
+  // allowances — so the rent is named here, in the main step's cost, and in the total step.
+  const rentNote = noAllowance && gas.rent !== null ? ` Plus a one-time token-account rent of ${fmtUsd(rent)}.` : '';
+  const mainCostText = gas.measured
+    ? `$${capital} of capital and ${gasPhrase(mainCost)}${noAllowance && gas.rent !== null ? `, plus a one-time token-account rent of ${fmtUsd(rent)}` : ''}; ${label}`
+    : nativeFee !== null
+      ? `$${capital} of capital; ${nativeFee}`
+      : `$${capital} of capital; gas unmeasured on this chain`;
   return [
     {
-      text: `Week 0: Open ${p.name}'s own ${program} page on ${domain} (checked ${checkedDay}) and confirm the program is still listed. If the page no longer names the program, stop — do not deposit. Run this plan on one wallet only (a fresh wallet, seed phrase kept offline) — never the same plan across many wallets. Connect the wallet only to view; sign nothing outside this plan's steps.${p.slug === 'saturn' ? ' The program page does not say what the points convert to — not yet known.' : ''}`,
+      text: isBitfi
+        ? `Week 0: Open BitFi's own ${program} page on ${domain} (checked ${checkedDay}) and confirm the program is still listed. If the page no longer names the program, stop — do not deposit. Run this plan on one wallet only (fresh wallet, seed phrase kept offline) — never the same plan across many wallets. Connect only to view; sign nothing outside this plan's steps. BitFi is CeDeFi, custodied by Ceffu: counterparty risk applies. Its docs say bfBTC points ended, contradicting the bfBTC HODL section — this plan covers bfUSD only, never bfBTC.`
+        : `Week 0: Open ${p.name}'s own ${program} page on ${domain} (checked ${checkedDay}) and confirm the program is still listed. If the page no longer names the program, stop — do not deposit. Run this plan on one wallet only (a fresh wallet, seed phrase kept offline) — never the same plan across many wallets. Connect the wallet only to view; sign nothing outside this plan's steps.${isSaturn ? ' The program page does not say what the points convert to — not yet known.' : ''}`,
       cost: 'no fee to check',
       time: '10 minutes',
     },
+    ...(noAllowance
+      ? []
+      : [
+          {
+            text: `Week 1: Approve exactly $${capital} of USDC for ${p.name} on ${chain} — the deposit amount only, never an unlimited allowance.`,
+            cost: approveCost,
+            time: '5 minutes',
+          },
+        ]),
     {
-      text: `Week 1: Approve exactly $${capital} of USDC for ${p.name} on ${chain} — the deposit amount only, never an unlimited allowance.${gas.rent !== null ? ' (On a chain without token allowances there is nothing to approve.)' : ''}`,
-      cost: approveCost,
-      time: '5 minutes',
-    },
-    {
-      text: `Week 1: ${action} The $${capital} is a suggested starting size, not a rule: size it from your own budget and conviction — the protocol's TVL does not set your deposit.`,
-      cost: gas.measured ? `$${capital} of capital and ${gasPhrase(mainCost)}; ${label}` : `$${capital} of capital; gas unmeasured on this chain`,
+      text: `Week 1: ${action}${rentNote} The $${capital} is a suggested starting size, not a rule: size it from your own budget and conviction — the protocol's TVL does not set your deposit.`,
+      cost: mainCostText,
       time: '15 minutes to set up',
     },
     {
       text: isSaturn
         ? `Week 1: Approve exactly $${capital} of USDat for the sUSDat vault (the stake amount only, never unlimited), then stake it. The contracts also offer depositWithPermit, but its use in the app is unverified, so this plan budgets the approval. Gas quoted at the mint's unit figure; the real cost can be higher.`
-        : `Week 1: ${second} ${secondNote}`,
-      cost: gas.measured ? (isSaturn ? `${gasPhrase(approve)} to approve, ${gasPhrase(secondCost)} to stake` : gasPhrase(secondCost)) : 'gas unmeasured on this chain',
+        : isBitfi
+          ? `Week 1: Stake $${capital} of bfUSD to Horizon or Pulsar (the First Stake quest, one time only). Providing $${capital} of bfUSD as Curve liquidity is the alternative First Provide quest, not a second step. Gas quoted at the mint's unit figure; the real cost can be higher.`
+          : `Week 1: Check the program's own rules for a second action that counts. If the rules name one, take it (same unit gas figure as the main action); if they name none, skip this step.`,
+      cost: gas.measured
+        ? isSaturn
+          ? `${gasPhrase(approve)} to approve, ${gasPhrase(secondCost)} to stake`
+          : isBitfi
+            ? gasPhrase(secondCost)
+            : `no gas by default; ${gasPhrase(secondCost)} if a second counted action is named`
+        : isSaturn || isBitfi
+          ? 'gas unmeasured on this chain'
+          : nativeCore !== null
+            ? `no gas by default; ${nativeCore} if a second counted action is named`
+            : 'no gas by default; gas unmeasured on this chain if a second counted action is named',
       time: '10 minutes',
     },
     {
-      text: isSaturn
-        ? `Weeks 2–${weeks}: No weekly on-chain action is needed: the program names none that counts, so holding is enough. Each week open the program page, check TVL and incidents, and exit if a gate condition is met. An optional weekly on-chain action needs no new approval and adds ${gasPhrase(deposit)} (same unit-gas assumption, not measured).`
-        : `Weeks 2–${weeks}: Do one on-chain action a week on ${chain} that needs no new token approval — for example, vote on a proposal. Open the program page, check the TVL and any incident announcements, and exit if an exit-gate condition is met (a pegged asset depegs, a security incident, or the program ends or changes status). Hypothesis: the program's own rules do not say which actions count, so confirm on the program page before you repeat an action.`,
-      cost: gas.measured ? (isSaturn ? `no gas by default; ${gasPhrase(deposit)} per optional weekly action` : `${gasPhrase(deposit)} a week`) : 'gas unmeasured on this chain',
+      text: `Weeks 2–${weeks}: No weekly on-chain action is needed: the program names none that counts, so holding is enough. Each week open the program page, check TVL and incidents, and exit if a gate condition is met.`,
+      cost: gas.measured || nativeFee !== null ? 'no gas by default' : 'gas unmeasured on this chain',
       time: '10 minutes a week',
     },
     {
@@ -1038,12 +1395,28 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, ps: PointsSta
     {
       text: isSaturn
         ? `Week ${weeks}: Exit gate — revoke both approvals on ${chain}: the USDC approval for ${p.name} and the USDat approval for the sUSDat vault. Withdraw in two transactions: request the unstake, then claim from the withdrawal queue when ready (both at the mint's unit gas figure). Withdraw early, even at a loss, if a pegged asset depegs, a security incident occurs, or the points program ends or changes status.`
-        : `Week ${weeks}: Exit gate — revoke the ${p.name} approval on ${chain} (where one was given) and withdraw the position. Withdraw early, even at a loss, if a pegged asset depegs, the protocol reports a security incident, or the points program ends or changes status.`,
-      cost: gas.measured ? (isSaturn ? `${gasPhrase(approve)} to revoke each approval and ${gasPhrase(deposit)} per withdrawal (2 approvals, 2 withdrawals)` : `${gasPhrase(approve)} to revoke the approval and ${gasPhrase(deposit)} to withdraw`) : 'gas unmeasured on this chain',
+        : isBitfi
+          ? `Week ${weeks}: Exit gate — revoke the USDC approval for ${p.name} on ${chain}. Unstake from Horizon or Pulsar, then redeem the bfUSD. Withdraw early, even at a loss, if a pegged asset depegs, a security incident occurs, or the points program ends or changes status.`
+          : noAllowance
+            ? `Week ${weeks}: Exit gate — withdraw the position. Withdraw early, even at a loss, if a pegged asset depegs, the protocol reports a security incident, or the points program ends or changes status.`
+            : `Week ${weeks}: Exit gate — revoke the ${p.name} approval on ${chain} and withdraw the position. Withdraw early, even at a loss, if a pegged asset depegs, the protocol reports a security incident, or the points program ends or changes status.`,
+      cost: gas.measured
+        ? isSaturn
+          ? `${gasPhrase(approve)} to revoke each approval and ${gasPhrase(deposit)} per withdrawal (2 approvals, 2 withdrawals)`
+          : isBitfi
+            ? `${gasPhrase(approve)} to revoke the approval and ${gasPhrase(deposit)} per withdrawal (1 approval, 2 withdrawals)`
+            : noAllowance
+              ? `${gasPhrase(deposit)} to withdraw`
+              : `${gasPhrase(approve)} to revoke the approval and ${gasPhrase(deposit)} to withdraw`
+        : nativeWithdraw !== null
+          ? nativeWithdraw
+          : 'gas unmeasured on this chain',
       time: '15 minutes',
     },
     {
-      text: `Week ${weeks}: Claim only from the link the protocol itself publishes on its own site, and never pay anyone to claim for you. If no claim link is published, there is nothing to claim yet.`,
+      text: isBitfi
+        ? `Week ${weeks}: Claim only from the link ${p.name} itself publishes on its own site, and never pay anyone to claim for you. ${p.name}'s docs say token airdrops will be distributed from total points, but when and how is not yet known — if no claim link is published, there is nothing to claim yet.`
+        : `Week ${weeks}: Claim only from the link the protocol itself publishes on its own site, and never pay anyone to claim for you. If no claim link is published, there is nothing to claim yet.`,
       cost: 'no fee to check, and never pay to claim',
       time: '10 minutes',
     },
@@ -1063,9 +1436,15 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, ps: PointsSta
 /** The verification plan for a protocol with no verified points program: checks only, no deposit. */
 function verificationSteps(p: SnapshotProtocol, ps: PointsStatus): FarmStep[] {
   const checkedDay = fmtDay(ps.checked);
-  const first = checkedDay !== null
-    ? `Week 0: The registry last checked ${p.name} on ${checkedDay} and found no points program on the protocol's own domain, so there is no farm plan here — only checks. Start again from ${p.name}'s page on DefiLlama (slug ${p.slug}) and follow its official-site link; an off-domain mention proves nothing.`
-    : `Week 0: No points program is on record for ${p.name}, so there is no farm plan here — only checks. Start from ${p.name}'s page on DefiLlama (slug ${p.slug}) and follow its official-site link; do not deposit on the strength of a rumour.`;
+  // Noble is the one ended program on record (research 20 Nov 2026, Dollar v2.3.0 + Noble
+  // v11.4.0): Season 2 ended in April 2026, so the plan says so outright instead of the
+  // generic "found no program" — and warns holders about Circle's 12 Jan 2027 USDC pause.
+  const isNoble = p.slug === 'noble';
+  const first = isNoble
+    ? `Week 0: Do not deposit. Noble Points (Season 2) ended in April 2026 — Dollar v2.3.0 disabled vault locking and the v11.4.0 upgrade unlocked all staked vault positions — and points.noble.xyz no longer names any points program (checked ${checkedDay}). The only historical points action was locking USDN in the USDN Staking Vault, forfeiting yield for points; holding USDC on Noble never earned points, and ordinary users cannot delegate on Noble's permissioned proof-of-authority validator set.`
+    : checkedDay !== null
+      ? `Week 0: The registry last checked ${p.name} on ${checkedDay} and found no points program on the protocol's own domain, so there is no farm plan here — only checks. Start again from ${p.name}'s page on DefiLlama (slug ${p.slug}) and follow its official-site link; an off-domain mention proves nothing.`
+      : `Week 0: No points program is on record for ${p.name}, so there is no farm plan here — only checks. Start from ${p.name}'s page on DefiLlama (slug ${p.slug}) and follow its official-site link; do not deposit on the strength of a rumour.`;
   return [
     {
       text: first,
@@ -1073,7 +1452,9 @@ function verificationSteps(p: SnapshotProtocol, ps: PointsStatus): FarmStep[] {
       time: '10 minutes',
     },
     {
-      text: `Week 0: On the protocol's own site, look for a points or rewards page and read what it actually promises — the program's name, its season and which actions it counts. Do not connect your wallet or sign anything to view the points page. If there is no such page, stop here.`,
+      text: isNoble
+        ? `Week 0: Check Noble's official channels for any successor program on the new EVM L1; until one is published with rules, there is nothing to farm here. If you already hold USDC on Noble, move it off before Circle pauses the Noble USDC contract on 12 Jan 2027. Do not connect your wallet or sign anything to view a points page.`
+        : `Week 0: On the protocol's own site, look for a points or rewards page and read what it actually promises — the program's name, its season and which actions it counts. Do not connect your wallet or sign anything to view the points page. If there is no such page, stop here.`,
       cost: 'no fee to check',
       time: '10 minutes',
     },
@@ -1100,6 +1481,122 @@ function verificationSteps(p: SnapshotProtocol, ps: PointsStatus): FarmStep[] {
   ];
 }
 
+/**
+ * The farm verdict (research/farm-verdicts.md): one verdict per board row, from the model's
+ * economics — FARM / MARGINAL-THIN / SKIP. This is NOT a recommendation to deposit. For a
+ * verified row the verdict rests on a real points program and a costed plan; for an unknown
+ * row it is conditional — what WOULD pay IF the program verifies AND the token launches —
+ * and the row's verification plan still says: verify first, deposit nothing until then.
+ *
+ *   slice  = implied_if_launches x odds x DROP_SHARE x deposit / (TVL + deposit)
+ *   fees   = the farm plan's total gas when measured, else 0 (flagged unmeasured)
+ *   tbill  = deposit x TBILL_RATE x hold_days / 365
+ *   net    = slice - fees - tbill
+ *   hours  = (SETUP_MINUTES + WEEKLY_MINUTES x weeks) / 60, weeks = ceil(hold_days / 7)
+ *   FARM ⟺ net > $25 AND net/hour > $5; MARGINAL-THIN ⟺ net > $0; else SKIP.
+ *
+ * The slice is the farmer's PRO-RATA share of the farmer allocation, not the whole
+ * allocation: DROP_SHARE (5% of launch FDV) is what ALL farmers share, and one deposit
+ * earns its deposit/(TVL + deposit) share of it — the top-10 formula (research/
+ * top10-references.md P4: slice = drop share x implied x deposit / (TVL + deposit)).
+ * Reading the task's shorthand "slice = implied x odds x drop_share" literally would hand
+ * the entire farmer pool to one $50-$250 deposit and make all 197 rows FARM; the pro-rata
+ * factor is what makes the verdict discriminate at all (21 FARM / 170 MARGINAL-THIN /
+ * 6 SKIP on this snapshot). The 5% itself is a stated assumption, not a measurement: the
+ * top 10 use 3.5-14% (kiencx/europa 7%); 5% sits in the middle and is conservative
+ * against their 7%. The 4% T-bill rate is theirs too (kiencx: "the same money in a 4%
+ * T-bill"). Deposit and hold reuse the farm plan's own sizing (capitalFor / holdDaysFor),
+ * so a verdict and its plan never disagree about the ticket or the horizon. Hours reuse
+ * the plan's own time budget: 80 setup minutes (10 check + 5 approve + 15 main action +
+ * 10 second action + 10 re-check + 15 exit + 10 claim + 5 total) plus 10 minutes a week
+ * of checks while holding.
+ *
+ * What the verdict does NOT know: whether the points program exists (unknown rows),
+ * whether the token ever launches (odds are the peers' record, not a forecast), the
+ * drop's vesting or claim conditions, slippage, or the deposit's own risk (depeg,
+ * exploit, custody). A FARM verdict on an unknown row is a statement about the model's
+ * arithmetic, not about a program.
+ */
+export const VERDICT_DROP_SHARE = 0.05;
+export const VERDICT_TBILL_ANNUAL_RATE = 0.04;
+export const VERDICT_FARM_NET_USD = 25;
+export const VERDICT_FARM_NET_PER_HOUR_USD = 5;
+export const VERDICT_SETUP_MINUTES = 80;
+export const VERDICT_WEEKLY_MINUTES = 10;
+
+export type FarmVerdict = 'FARM' | 'MARGINAL-THIN' | 'SKIP';
+export interface VerdictDetail {
+  verdict: FarmVerdict;
+  slice_usd: number;
+  fees_usd: number;
+  fees_measured: boolean;
+  tbill_usd: number;
+  net_usd: number;
+  net_per_hour_usd: number;
+  hours: number;
+  deposit_usd: number;
+  hold_days: number;
+  /** 'verified': a real program and a costed plan behind the verdict. 'conditional': unknown row — profitable only IF verified + launches. */
+  basis: 'verified' | 'conditional';
+}
+
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/**
+ * A farm plan's total gas in USD, as a number — the same counts farmSteps() quotes in its
+ * total step (approveCount / depCount / bridgeCount, plus the Solana one-time rent), so the
+ * verdict's fees and the plan's total step can never drift apart; the validation script
+ * cross-checks them. Null when the plan has no measured total: an unknown row (its plan is
+ * verification only, no deposit) or a verified row on a chain the gas snapshot does not
+ * cover. Doppler (XRPL) is the one exception with a number but no measurement: XRPL burns
+ * 10 drops per standard transaction, so ~7 transactions cost ~$0.00007 — quoted as $0.0001,
+ * flagged unmeasured, because it is an arithmetic bound, not a measured USD sum.
+ */
+export function farmPlanGasUsd(p: SnapshotProtocol, ps: PointsStatus): { gas_usd: number | null; measured: boolean } {
+  if (ps.status !== 'verified') return { gas_usd: null, measured: false };
+  if (p.slug === 'doppler-finance') return { gas_usd: 0.0001, measured: false };
+  const chain = chainOf(p);
+  const gas = gasForChain(chain);
+  if (!gas.measured) return { gas_usd: null, measured: false };
+  const kind = actionKindFor(p);
+  const noAllowance = NO_ALLOWANCE_CHAINS.has(chain.toLowerCase());
+  const isSaturn = p.slug === 'saturn';
+  const isBitfi = p.slug === 'bitfi-basis';
+  const approveCount = isSaturn ? 4 : isBitfi ? 2 : noAllowance ? 0 : 2;
+  const depCount = isSaturn ? 4 : isBitfi ? 4 : kind === 'deposit' ? 2 : 1;
+  const bridgeCount = isSaturn || isBitfi ? 0 : kind === 'bridge' ? 1 : 0;
+  const total = (gas.approve ?? 0) * approveCount + (gas.deposit ?? 0) * depCount + (gas.bridge ?? 0) * bridgeCount + (gas.rent ?? 0);
+  return { gas_usd: total, measured: true };
+}
+
+/** One row's farm verdict from the model's economics. */
+export function farmVerdictFor(p: SnapshotProtocol, age: number | null, ps: PointsStatus, impliedIfLaunches: number, odds: number): VerdictDetail {
+  const deposit = capitalFor(p);
+  const hold = holdDaysFor(age);
+  const weeks = Math.ceil(hold / 7);
+  const hours = (VERDICT_SETUP_MINUTES + VERDICT_WEEKLY_MINUTES * weeks) / 60;
+  const slice = impliedIfLaunches * odds * VERDICT_DROP_SHARE * (deposit / (p.tvl_usd + deposit));
+  const gas = farmPlanGasUsd(p, ps);
+  const fees = gas.gas_usd ?? 0;
+  const tbill = deposit * VERDICT_TBILL_ANNUAL_RATE * (hold / 365);
+  const net = slice - fees - tbill;
+  const netPerHour = net / hours;
+  const verdict: FarmVerdict = net > VERDICT_FARM_NET_USD && netPerHour > VERDICT_FARM_NET_PER_HOUR_USD ? 'FARM' : net > 0 ? 'MARGINAL-THIN' : 'SKIP';
+  return {
+    verdict,
+    slice_usd: round2(slice),
+    fees_usd: round4(fees),
+    fees_measured: gas.measured,
+    tbill_usd: round2(tbill),
+    net_usd: round2(net),
+    net_per_hour_usd: round2(netPerHour),
+    hours: round2(hours),
+    deposit_usd: deposit,
+    hold_days: hold,
+    basis: ps.status === 'verified' ? 'verified' : 'conditional',
+  };
+}
+
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
 
@@ -1118,6 +1615,98 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
       mcap_usd: p.mcap_usd,
       change_7d: p.change_7d,
     }));
+}
+
+/** The 2-3 nearest live-token protocols by TVL, same category first.
+ *
+ * A peer must already record a token with a market cap (that is what "priced" means here)
+ * and a positive TVL. Same-category peers come first, then other categories, each ordered
+ * by |ln(TVL) difference| — the closest in size. Versioned pools (aave-v3), wrapped/staked
+ * names and exchanges are excluded from the first pass: a version row's market cap is its
+ * parent token's, not the version's, so its multiple is distorted (research/token-odds-model
+ * §1.1); if fewer than 2 clean peers exist the second pass relaxes the name rules rather
+ * than leaving the row with one peer. The multiple shown is market cap / TVL — the snapshot
+ * carries no FDV, so no FDV/TVL multiple can be shown for a peer.
+ */
+export function nearestPeersFor(p: SnapshotProtocol, snapshot: Snapshot): NearestPeer[] {
+  const clean = (q: SnapshotProtocol): boolean =>
+    q.slug !== p.slug &&
+    q.symbol !== null &&
+    q.mcap_usd !== null &&
+    q.tvl_usd > 0 &&
+    q.category !== 'CEX' &&
+    !VERSIONED.test(q.name) &&
+    !WRAPPED_WORD.test(q.name) &&
+    !ST_TOKEN.test(q.name) &&
+    !EXCHANGE_PREFIX.test(q.name);
+  const byDistance = (a: SnapshotProtocol, b: SnapshotProtocol): number => {
+    const sameA = a.category === p.category ? 0 : 1;
+    const sameB = b.category === p.category ? 0 : 1;
+    if (sameA !== sameB) return sameA - sameB;
+    return Math.abs(Math.log(a.tvl_usd) - Math.log(p.tvl_usd)) - Math.abs(Math.log(b.tvl_usd) - Math.log(p.tvl_usd));
+  };
+  const toPeer = (q: SnapshotProtocol): NearestPeer => ({
+    slug: q.slug,
+    name: q.name,
+    category: q.category,
+    tvl_usd: q.tvl_usd,
+    mcap_usd: q.mcap_usd!,
+    mcap_multiple: round3(q.mcap_usd! / q.tvl_usd),
+  });
+  const peers = snapshot.protocols.filter(clean).sort(byDistance).slice(0, 3).map(toPeer);
+  if (peers.length < 2) {
+    const fallback = snapshot.protocols
+      .filter((q) => q.slug !== p.slug && q.symbol !== null && q.mcap_usd !== null && q.tvl_usd > 0 && !peers.some((r) => r.slug === q.slug))
+      .sort((a, b) => Math.abs(Math.log(a.tvl_usd) - Math.log(p.tvl_usd)) - Math.abs(Math.log(b.tvl_usd) - Math.log(p.tvl_usd)));
+    for (const q of fallback) {
+      if (peers.length >= 3) break;
+      peers.push(toPeer(q));
+    }
+  }
+  return peers;
+}
+
+/** The protocol ledger: every snapshot protocol in exactly one bucket (see the Ledger interface). */
+export function buildLedger(snapshot: Snapshot, board: BoardRow[]): Ledger {
+  const boardSlugs = new Set(board.map((r) => r.slug));
+  const liveSlugs = new Set(liveRows(snapshot).map((r) => r.slug));
+  const empty = (): LedgerBucket => ({ count: 0, tvl_usd: 0 });
+  const ledger: Ledger = {
+    total: snapshot.protocols.length,
+    ranked: empty(),
+    live_token_shown: empty(),
+    live_token_other: empty(),
+    excluded_category: empty(),
+    excluded_category_by_category: {},
+    versioned: empty(),
+    wrapped_or_staked: empty(),
+    exchange_name: empty(),
+    other_excluded: empty(),
+  };
+  const add = (bucket: LedgerBucket, p: SnapshotProtocol): void => {
+    bucket.count += 1;
+    bucket.tvl_usd += p.tvl_usd;
+  };
+  const snapshotSlugs = new Set(snapshot.protocols.map((p) => p.slug));
+  for (const p of snapshot.protocols) {
+    if (boardSlugs.has(p.slug)) {
+      add(ledger.ranked, p);
+    } else if (!isPreToken(p)) {
+      add(liveSlugs.has(p.slug) ? ledger.live_token_shown : ledger.live_token_other, p);
+    } else if (p.category !== null && EXCLUDED_CATEGORIES.has(p.category)) {
+      add(ledger.excluded_category, p);
+      ledger.excluded_category_by_category[p.category] = (ledger.excluded_category_by_category[p.category] ?? 0) + 1;
+    } else if (isVersionedPool(p, snapshotSlugs)) {
+      add(ledger.versioned, p);
+    } else if (isWrappedOrStakedName(p)) {
+      add(ledger.wrapped_or_staked, p);
+    } else if (EXCHANGE_PREFIX.test(p.name)) {
+      add(ledger.exchange_name, p);
+    } else {
+      add(ledger.other_excluded, p);
+    }
+  }
+  return ledger;
 }
 
 /** The calibration table the dashboard shows: measured intercepts first, then the mappings, then the global row. */
@@ -1177,6 +1766,18 @@ export function radarRow(row: BoardRow): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
+    implied_if_launches_usd: row.implied_if_launches_usd,
+    token_odds: row.token_odds,
+    farm_verdict: row.farm_verdict,
+    verdict_net_usd: row.verdict_net_usd,
+    verdict_net_per_hour_usd: row.verdict_net_per_hour_usd,
+    verdict_slice_usd: row.verdict_slice_usd,
+    verdict_fees_usd: row.verdict_fees_usd,
+    verdict_fees_measured: row.verdict_fees_measured,
+    verdict_tbill_usd: row.verdict_tbill_usd,
+    verdict_basis: row.verdict_basis,
+    value_parts: row.value_parts,
+    nearest_peers: row.nearest_peers,
     multiple: row.model.multiple,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
@@ -1211,6 +1812,14 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     rows: board.map(radarRow),
     live,
     gas_costs: GAS_COSTS,
+    odds_evidence: ODDS_EVIDENCE,
+    verdict_params: {
+      drop_share: VERDICT_DROP_SHARE,
+      tbill_annual_rate: VERDICT_TBILL_ANNUAL_RATE,
+      farm_net_usd: VERDICT_FARM_NET_USD,
+      farm_net_per_hour_usd: VERDICT_FARM_NET_PER_HOUR_USD,
+    },
+    ledger: buildLedger(snapshot, board),
   };
   return { board, radar };
 }
