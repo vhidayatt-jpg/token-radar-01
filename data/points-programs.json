@@ -1,0 +1,116 @@
+{
+  "meta": {
+    "total": 15,
+    "yes": 11,
+    "unknown": 4,
+    "checked": "2026-11-19",
+    "rule": "yes = points AND official_source AND checked within 30 days of the build date"
+  },
+  "programs": {
+    "axis": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-19",
+      "source": "https://docs.axis.to/origin-vault/origin-vault.md",
+      "program": "Coordinates (Season 1)"
+    },
+    "b14g": {
+      "points": true,
+      "official_source": false,
+      "checked": "2026-11-19",
+      "source": "https://paragraph.com/@b14g",
+      "program": null
+    },
+    "curvance": {
+      "points": true,
+      "official_source": false,
+      "checked": "2026-11-19",
+      "source": "https://app.curvance.com/bytes",
+      "program": null
+    },
+    "doppler-finance": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-19",
+      "source": "https://blog.doppler.finance/blog/introducing-xdp-staking-dp-season-3",
+      "program": "Doppler Points (Season 3)"
+    },
+    "firelight": {
+      "points": true,
+      "official_source": false,
+      "checked": "2026-11-19",
+      "source": "https://superapp.spendthebits.com/insights/earning-on-xrp-firelight-stxrp-points",
+      "program": null
+    },
+    "infinifi": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-19",
+      "source": "https://docs.infinifi.xyz/",
+      "program": "Season 3 points"
+    },
+    "noble": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-19",
+      "source": "https://points.noble.xyz",
+      "program": "Noble Points (Season 2)"
+    },
+    "onre": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-19",
+      "source": "https://onre.finance/blog/onre-introduces-points-program-rewarding-onyc-participation-across-defi",
+      "program": "OnRe Points"
+    },
+    "saturn": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-19",
+      "source": "https://app.saturn.credit/",
+      "program": "Orbital Points (Season 2)"
+    },
+    "symbiotic": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-19",
+      "source": "https://docs.symbiotic.fi/get-started/resources/points-program",
+      "program": "Symbiotic Points"
+    },
+    "tori-finance": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-19",
+      "source": "https://docs.tori.finance/resources/cores",
+      "program": "Cores (Season 1)"
+    },
+    "tydro": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-19",
+      "source": "https://forum.tydro.com/t/tydroinkpoints-season-2-introducing-boost-multipliers/22/2",
+      "program": "TydroInkPoints (Season 2)"
+    },
+    "upshift": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-19",
+      "source": "https://app.upshift.finance/points",
+      "program": "Upshift Points (Season 2)"
+    },
+    "veda": {
+      "points": true,
+      "official_source": false,
+      "checked": "2026-11-19",
+      "source": "https://airdrops.io/veda/",
+      "program": null
+    },
+    "yuzu-money": {
+      "points": true,
+      "official_source": true,
+      "checked": "2026-11-19",
+      "source": "https://app.yuzu.money/points/overview",
+      "program": "Yuzu Juice"
+    }
+  }
+}

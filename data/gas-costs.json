@@ -1,5 +1,5 @@
 {
-  "as_of": "2026-11-20T00:32:34+07:00",
+  "as_of": "2026-11-20T06:53:39+07:00",
   "source": "farm_plan.py action_costs_usd()",
   "method": "execution-only; L2 excl. L1 data fee; Solana excl. rent (reported separately)",
   "chains": {
@@ -8,7 +8,7 @@
         "approve": 0.0018,
         "swap": 0.0053,
         "deposit": 0.0046,
-        "bridge": 0.0071
+        "bridge": 0.007
       },
       "first_account_rent_usd": null,
       "entry_usd": 0.0046
@@ -17,11 +17,11 @@
       "execution_usd": {
         "approve": 0.0026,
         "swap": 0.0079,
-        "deposit": 0.0069,
-        "bridge": 0.0106
+        "deposit": 0.0068,
+        "bridge": 0.0105
       },
       "first_account_rent_usd": null,
-      "entry_usd": 0.0069
+      "entry_usd": 0.0068
     },
     "base": {
       "execution_usd": {
@@ -35,33 +35,33 @@
     },
     "bsc": {
       "execution_usd": {
-        "approve": 0.0015,
-        "swap": 0.0044,
+        "approve": 0.0014,
+        "swap": 0.0043,
         "deposit": 0.0038,
-        "bridge": 0.0059
+        "bridge": 0.0058
       },
       "first_account_rent_usd": null,
       "entry_usd": 0.0038
     },
     "ethereum": {
       "execution_usd": {
-        "approve": 0.0612,
-        "swap": 0.1837,
-        "deposit": 0.1592,
-        "bridge": 0.245
+        "approve": 0.0155,
+        "swap": 0.0464,
+        "deposit": 0.0402,
+        "bridge": 0.0619
       },
       "first_account_rent_usd": null,
-      "entry_usd": 0.1592
+      "entry_usd": 0.0402
     },
     "linea": {
       "execution_usd": {
-        "approve": 0.0045,
-        "swap": 0.0135,
-        "deposit": 0.0117,
-        "bridge": 0.018
+        "approve": 0.0083,
+        "swap": 0.0249,
+        "deposit": 0.0216,
+        "bridge": 0.0332
       },
       "first_account_rent_usd": null,
-      "entry_usd": 0.0117
+      "entry_usd": 0.0216
     },
     "optimism": {
       "execution_usd": {
@@ -90,8 +90,8 @@
         "deposit": 0.0004,
         "bridge": 0.0004
       },
-      "first_account_rent_usd": 0.1509,
-      "entry_usd": 0.1513
+      "first_account_rent_usd": 0.149,
+      "entry_usd": 0.1494
     }
   }
 }

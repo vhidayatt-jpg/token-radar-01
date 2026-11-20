@@ -1,0 +1,161 @@
+{
+  "meta": {
+    "source": "https://stablecoins.llama.fi/stablecoins",
+    "as_of": "2026-11-20",
+    "fetched_at": "2026-11-20T00:06:39.092411+00:00",
+    "board": "repo/out/board.json",
+    "board_rows": 197,
+    "pegged_assets": 452,
+    "note": "Build-time cross-check only. Absence from this list does not prove a row is pre-token; manual curation still applies."
+  },
+  "matches": [
+    {
+      "slug": "usdd",
+      "name": "USDD",
+      "rank": 1,
+      "token_verification": "verified-live",
+      "token_symbol": "USDD",
+      "stablecoin_name": "USDD",
+      "stablecoin_symbol": "USDD",
+      "stablecoin_gecko_id": "usdd",
+      "match_method": "token_symbol"
+    },
+    {
+      "slug": "saturn",
+      "name": "Saturn",
+      "rank": 7,
+      "token_verification": "verified-live",
+      "token_symbol": "USDAT",
+      "stablecoin_name": "Saturn Dollar",
+      "stablecoin_symbol": "USDAT",
+      "stablecoin_gecko_id": "saturn-dollar",
+      "match_method": "token_symbol"
+    },
+    {
+      "slug": "rif-on-chain",
+      "name": "RIF ON CHAIN",
+      "rank": 35,
+      "token_verification": "verified-live",
+      "token_symbol": "USDRIF",
+      "stablecoin_name": "RIF US Dollar",
+      "stablecoin_symbol": "USDRIF",
+      "stablecoin_gecko_id": "rif-us-dollar",
+      "match_method": "token_symbol"
+    },
+    {
+      "slug": "hylo-protocol",
+      "name": "Hylo Protocol",
+      "rank": 37,
+      "token_verification": "verified-live",
+      "token_symbol": "HYUSD",
+      "stablecoin_name": "Hylo HYUSD",
+      "stablecoin_symbol": "HYUSD",
+      "stablecoin_gecko_id": "hylo-usd",
+      "match_method": "token_symbol+protocol_name"
+    },
+    {
+      "slug": "bucket-cdp",
+      "name": "Bucket CDP",
+      "rank": 50,
+      "token_verification": "verified-live",
+      "token_symbol": "BUCK",
+      "stablecoin_name": "Bucket Protocol BUCK Stablecoin",
+      "stablecoin_symbol": "BUCK",
+      "stablecoin_gecko_id": "bucket-protocol-buck-stablecoin",
+      "match_method": "token_symbol"
+    },
+    {
+      "slug": "felix-cdp",
+      "name": "Felix CDP",
+      "rank": 54,
+      "token_verification": "verified-live",
+      "token_symbol": "FEUSD",
+      "stablecoin_name": "Felix feUSD",
+      "stablecoin_symbol": "FEUSD",
+      "stablecoin_gecko_id": "felix-feusd",
+      "match_method": "token_symbol"
+    },
+    {
+      "slug": "bima-cdp",
+      "name": "BIMA CDP",
+      "rank": 85,
+      "token_verification": "verified-live",
+      "token_symbol": "USBD",
+      "stablecoin_name": "USBD",
+      "stablecoin_symbol": "USBD",
+      "stablecoin_gecko_id": "usbd",
+      "match_method": "token_symbol"
+    },
+    {
+      "slug": "btcfi-cdp",
+      "name": "BTCFi CDP",
+      "rank": 89,
+      "token_verification": "verified-live",
+      "token_symbol": "BtcUSD",
+      "stablecoin_name": "Bitcoin USD",
+      "stablecoin_symbol": "BtcUSD",
+      "stablecoin_gecko_id": "bitcoin-usd-btcfi",
+      "match_method": "token_symbol+protocol_name"
+    },
+    {
+      "slug": "kava-mint",
+      "name": "Kava Mint",
+      "rank": 90,
+      "token_verification": "verified-live",
+      "token_symbol": null,
+      "stablecoin_name": null,
+      "stablecoin_symbol": null,
+      "stablecoin_gecko_id": null,
+      "match_method": "token_symbol",
+      "ambiguous": true,
+      "candidates": [
+        {
+          "name": "Axis USD",
+          "symbol": "USDx",
+          "gecko_id": "axis-usd"
+        },
+        {
+          "name": "Hex Trust USDX",
+          "symbol": "USDX",
+          "gecko_id": "hex-trust-usdx"
+        },
+        {
+          "name": "USDX",
+          "symbol": "USDX",
+          "gecko_id": "usdx"
+        },
+        {
+          "name": "USDX Money USDX",
+          "symbol": "USDX",
+          "gecko_id": "usdx-money-usdx"
+        }
+      ]
+    },
+    {
+      "slug": "strato-cdp",
+      "name": "STRATO CDP",
+      "rank": 100,
+      "token_verification": "unclear",
+      "token_symbol": "USDST",
+      "stablecoin_name": "USDST",
+      "stablecoin_symbol": "USDST",
+      "stablecoin_gecko_id": "usdst",
+      "match_method": "token_symbol"
+    }
+  ],
+  "summary": {
+    "matched_slugs": 9,
+    "ambiguous_slugs": 1,
+    "verified_live_rows": 10,
+    "verified_live_covered": 8,
+    "unclear_rows": 3,
+    "unclear_covered": 1,
+    "uncovered_verified_live_or_unclear": [
+      "usdcx",
+      "monolith-market",
+      "kava-mint",
+      "swan-dao"
+    ],
+    "verified_pre_token_rows_matching_a_live_stablecoin": []
+  }
+}
